@@ -5,6 +5,7 @@ export type ConsultationScenario = "contract_review" | "variation"
 export type ConsultationStatus = "in_progress" | "completed" | "abandoned"
 
 export interface ConsultationConclusion {
+  id: number
   level: "red" | "yellow" | "green"
   title: string
   content: string
@@ -73,7 +74,7 @@ export async function getConsultation(id: number): Promise<Consultation> {
 
 export type StreamEvent =
   | { type: "chunk"; text: string }
-  | { type: "done"; summary: string; risk_count: number }
+  | { type: "done"; summary: string; risk_count: number; disclaimer?: string }
   | { type: "error"; message: string }
 
 /**

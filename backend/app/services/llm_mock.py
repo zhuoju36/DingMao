@@ -11,6 +11,7 @@ W2/W3 接入真实 LLM 时，本文件作为 fallback 保留。
 
 from typing import Any
 
+from app.core.constants import DISCLAIMER
 from app.models.user import UserRole
 
 # 关键词 -> 风险结论（mock 知识库）
@@ -202,8 +203,5 @@ def generate_contract_review_report(
     return {
         "summary": summary,
         "conclusions": findings,
-        "disclaimer": (
-            "⚠️ 本报告由 Mock LLM 生成，仅用于流程演示，不构成法律意见。"
-            "重大决策前请由执业律师复核。"
-        ),
+        "disclaimer": DISCLAIMER,
     }

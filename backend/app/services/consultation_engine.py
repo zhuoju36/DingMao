@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.constants import DISCLAIMER
 from app.core.exceptions import ConsultationError
 from app.models.consultation import (
     Consultation,
@@ -391,10 +392,13 @@ async def stream_report(
     consultation.status = ConsultationStatus.COMPLETED.value
     consultation.dispute_summary_ai = report.get("summary", "")
 
-    await db.flush()
+    # 显式提交：流式响应下依赖注入的 commit 时机不确定
+    # （客户端中途断开时可能不提交），报告必须落库才能持久化展示。
+    await db.commit()
 
     yield {
         "type": "done",
         "summary": report.get("summary", ""),
         "risk_count": len(report.get("risks", [])),
+        "disclaimer": DISCLAIMER,
     }
