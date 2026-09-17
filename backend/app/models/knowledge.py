@@ -1,6 +1,6 @@
 """知识库模型 - 法条、强条、行为-强条映射。"""
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,8 @@ class LawArticle(Base, TimestampMixin):
     """法条。"""
 
     __tablename__ = "law_articles"
+    # 同一部法律内条号唯一 —— 导入脚本依赖此约束做幂等 upsert
+    __table_args__ = (UniqueConstraint("law_id", "article_no", name="uq_law_article"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     law_id: Mapped[int] = mapped_column(ForeignKey("laws.id", ondelete="CASCADE"), index=True)
