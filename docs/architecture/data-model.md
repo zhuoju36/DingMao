@@ -26,6 +26,29 @@ app/models/
 └── project_note.py     # 项目层（V2）：ProjectNote / ProjectClause
 ```
 
+### 实体关系图
+
+```
+User (1) ──< Project (N) ──< Consultation (N) ──< Message (N)
+                              │                     ──< Fact (N)
+                              │                     ──< Conclusion (N)
+                              │                     ──< Artifact (N)
+                              │
+                              ├──< ProjectDocument (N)
+                              └──< ProjectNote (V2)
+
+Law (1) ──< LawArticle (N)
+Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
+                                                          │
+                                                          └──> StandardClause
+```
+
+**关键关系**：
+- 一个 User 可拥有多个 Project（一对多）
+- 一个 Project 下可有多个 Consultation（**同一项目同场景可多次咨询**）
+- 一个 Consultation 包含 Messages（聊天）/ Facts（事实卡片）/ Conclusions（结论）/ Artifacts（文书）
+- 通用知识（Law / Standard）全局只读，不与 Project 关联
+
 ---
 
 ## 三、User（用户）
