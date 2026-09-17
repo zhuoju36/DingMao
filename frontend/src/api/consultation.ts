@@ -121,3 +121,42 @@ export async function* generateReportStream(
     }
   }
 }
+
+// === 多轮对话端点 ===
+
+export interface ConsultationMessage {
+  id: number
+  consultation_id: number
+  role: "user" | "assistant" | "system"
+  content: string
+  created_at: string
+}
+
+export interface ChatTurnResponse {
+  consultation_id: number
+  user_message_id: number
+  assistant_message_id: number
+  assistant_content: string
+  ready_to_report: boolean
+  fact_count: number
+}
+
+export async function postMessage(
+  consultationId: number,
+  content: string
+): Promise<ChatTurnResponse> {
+  const r = await apiClient.post<ChatTurnResponse>(
+    `/consultations/${consultationId}/messages`,
+    { content }
+  )
+  return r as unknown as ChatTurnResponse
+}
+
+export async function listMessages(
+  consultationId: number
+): Promise<ConsultationMessage[]> {
+  const r = await apiClient.get<ConsultationMessage[]>(
+    `/consultations/${consultationId}/messages`
+  )
+  return r as unknown as ConsultationMessage[]
+}

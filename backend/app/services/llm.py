@@ -206,36 +206,62 @@ class LLMClient:
 
         参数:
         - json_mode: True 时启用 JSON Schema + 禁用 thinking（M3 推荐）
+
+        降级策略（与 chat() 对齐）：
+        - 仅在**尚未产出任何 chunk** 时才允许切到下一个 provider
+        - 一旦开始输出，中途失败无法回退（用户已看到部分内容），
+          此时直接抛错，由调用方决定是否重试整轮
         """
-        provider = self._select_provider(task)
-        client = self._get_client(provider)
-        model = self._model_map[provider]
+        preferred = self._select_provider(task)
+        chain = [preferred] + [p for p in FALLBACK_CHAIN if p != preferred]
 
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": cast(
-                list[ChatCompletionMessageParam],
-                [{"role": m.role, "content": m.content} for m in messages],
-            ),
-            "temperature": temperature,
-            "stream": True,
-        }
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-        if response_format:
-            kwargs["response_format"] = response_format
-        # M3 thinking 控制：JSON 模式禁用，普通模式分离
-        if provider == "minimax":
-            if json_mode:
-                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-            else:
-                kwargs["extra_body"] = {"reasoning_split": True}
+        last_error: Exception | None = None
+        for provider in chain:
+            if not self._api_key_map.get(provider):
+                continue  # 未配置 key，跳过
 
-        raw_stream = await client.chat.completions.create(**kwargs)
+            emitted = False
+            try:
+                client = self._get_client(provider)
+                model = self._model_map[provider]
 
-        async for chunk in raw_stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "messages": cast(
+                        list[ChatCompletionMessageParam],
+                        [{"role": m.role, "content": m.content} for m in messages],
+                    ),
+                    "temperature": temperature,
+                    "stream": True,
+                }
+                if max_tokens is not None:
+                    kwargs["max_tokens"] = max_tokens
+                if response_format:
+                    kwargs["response_format"] = response_format
+                # M3 thinking 控制：JSON 模式禁用，普通模式分离
+                if provider == "minimax":
+                    if json_mode:
+                        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+                    else:
+                        kwargs["extra_body"] = {"reasoning_split": True}
+
+                raw_stream = await client.chat.completions.create(**kwargs)
+
+                async for chunk in raw_stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        emitted = True
+                        yield chunk.choices[0].delta.content
+                return  # 正常结束
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+                if emitted:
+                    # 已输出部分内容 → 不能回退，直接抛出
+                    raise
+                continue  # 未输出任何内容 → 尝试下一个 provider
+
+        raise LLMAllProvidersFailedError(
+            f"所有 LLM provider 流式调用失败。最后错误: {last_error}"
+        ) from last_error
 
 
 # 单例

@@ -20,6 +20,7 @@ from app.models.consultation import (
     Consultation,
     ConsultationConclusion,
     ConsultationFact,
+    ConsultationMessage,
     ConsultationScenario,
     ConsultationStatus,
 )
@@ -130,46 +131,144 @@ async def create_consultation(
     return consultation
 
 
-# ===== 流式输出 =====
+# ===== 多轮对话 =====
 
 
-def _build_report_prompt(
-    role: UserRole,
-    scenario: str,
-    dispute_text: str,
-) -> list[dict[str, str]]:
-    """构造报告生成的 prompt messages（按场景分支）。"""
-    # 不同场景用不同的 prompt 模板
-    if scenario == "variation":
-        # 变更扯皮场景
-        system = (
-            f"你是建工法律助手。角色视角：{role.value}。"
-            "用户将描述一起工程变更/签证/索赔争议事实。"
-            "请基于以下事实，结合建工行业惯例，识别法律风险点并给出处理建议。"
-            "输出 JSON：{"
-            '"risks": [{"clause": "事实要点", "level": "red|yellow|green", '
-            '"reason": "风险分析 + 处理建议（建议具体可执行，如签证程序、证据保全等）"}], '
-            '"summary": "一句话结论（包含核心风险定性）"}'
-            "}"
+async def chat_turn(
+    db: AsyncSession,
+    consultation: Consultation,
+    *,
+    user_content: str,
+) -> dict[str, Any]:
+    """处理一轮对话：保存用户消息 → LLM 流式生成助手回复 → 保存助手消息。
+
+    返回：{
+        "user_message_id": int,
+        "assistant_message_id": int,
+        "assistant_content": str,  # 完整内容
+        "ready_to_report": bool,
+        "fact_count": int,
+        "new_fact_labels": list[str],  # 本轮识别的事实类型
+    }
+    """
+    # 1. 保存用户消息
+    user_msg = ConsultationMessage(
+        consultation_id=consultation.id,
+        role="user",
+        content=user_content,
+        step_at_time=consultation.current_step,
+    )
+    db.add(user_msg)
+    await db.flush()
+
+    # 2. 加载上下文
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.services.chat import (
+        build_chat_messages,
+        extract_fact_labels,
+        is_information_sufficient,
+        search_laws,
+    )
+
+    # 2a. 重新查询 consultation 拿 messages
+    result = await db.execute(
+        select(Consultation)
+        .options(
+            selectinload(Consultation.messages),
+            selectinload(Consultation.facts),
         )
-        user_msg = f"请分析以下变更争议事实：\n\n{dispute_text}"
+        .where(Consultation.id == consultation.id)
+    )
+    consultation_full = result.scalar_one()
+
+    # 2b. 知识库检索（用用户输入做关键词）
+    knowledge_hits = await search_laws(db, user_content, limit=3)
+
+    # 2c. 加载 user（取角色）
+    from sqlalchemy import select
+
+    from app.models.user import User
+
+    user_result = await db.execute(select(User).where(User.id == consultation.user_id))
+    user = user_result.scalar_one()
+    role = UserRole(user.role)
+    msgs = build_chat_messages(
+        role=role,
+        scenario=consultation.scenario,
+        facts=list(consultation_full.facts),
+        knowledge_hits=knowledge_hits,
+        recent_messages=list(consultation_full.messages),
+        new_user_content=user_content,
+    )
+
+    # 3. LLM 流式生成
+    from app.services.llm import LLMMessage, LLMTaskType, get_llm_client
+
+    client = get_llm_client()
+    chunks: list[str] = []
+    try:
+        async for piece in client.stream_chat(
+            task=LLMTaskType.CONSULTATION_REASONING,
+            messages=[
+                LLMMessage(role=m["role"], content=m["content"]) for m in msgs
+            ],
+            temperature=1.0,
+            max_tokens=2000,
+            json_mode=False,
+        ):
+            chunks.append(piece)
+    except Exception as e:  # noqa: BLE001
+        full_content = f"⚠️ LLM 调用失败: {e}"
     else:
-        # 合同审查场景（默认）
-        system = (
-            f"你是建工法律助手。角色视角：{role.value}。"
-            "分析合同条款，识别法律风险点。"
-            "输出 JSON：{"
-            '"risks": [{"clause": "条款摘要", "level": "red|yellow|green", '
-            '"reason": "风险分析 + 修改建议（具体可执行）"}], '
-            '"summary": "一句话结论（包含合同整体风险定性）"}'
-            "}"
-        )
-        user_msg = f"分析以下合同条款：\n\n{dispute_text}"
+        full_content = "".join(chunks)
 
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_msg},
-    ]
+    # 4. 保存助手消息
+    assistant_msg = ConsultationMessage(
+        consultation_id=consultation.id,
+        role="assistant",
+        content=full_content,
+        step_at_time=consultation.current_step,
+    )
+    db.add(assistant_msg)
+    await db.flush()
+
+    # 5. 抽取新事实标签（写入 fact 卡片）
+    new_fact_labels = extract_fact_labels(user_content)
+    base_count = len(consultation_full.facts)
+    for i, label in enumerate(new_fact_labels):
+        fact = ConsultationFact(
+            consultation_id=consultation.id,
+            fact_key=f"chat_turn_{base_count + i}",
+            fact_label=label,
+            fact_value=user_content[:500],  # 摘要
+            fact_value_type="text",
+            source_type="user_input",
+            source_message_id=user_msg.id,
+            confidence=0.8,  # 启发式抽取，置信度低一些
+        )
+        db.add(fact)
+    await db.flush()
+
+    # 6. 判断是否信息充分
+    all_messages = sorted(consultation_full.messages, key=lambda m: m.created_at)
+    ready = is_information_sufficient(
+        fact_count=len(consultation_full.facts) + len(new_fact_labels),
+        last_messages=all_messages + [user_msg, assistant_msg],
+    )
+
+    return {
+        "user_message_id": user_msg.id,
+        "assistant_message_id": assistant_msg.id,
+        "assistant_content": full_content,
+        "ready_to_report": ready,
+        "fact_count": len(consultation_full.facts) + len(new_fact_labels),
+        "new_fact_labels": new_fact_labels,
+    }
+
+
+# ===== 流式输出 =====
 
 
 async def stream_report(
@@ -189,18 +288,60 @@ async def stream_report(
 
     流结束时一次性把结论写入 DB。
     """
+    client = get_llm_client()
+
+    # 用 chat.py 的 build_report_messages（合并所有 messages + facts）
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.services.chat import build_report_messages, search_laws
+
+    # 重新加载 consultation（含 messages + facts）
+    result = await db.execute(
+        select(Consultation)
+        .options(
+            selectinload(Consultation.messages),
+            selectinload(Consultation.facts),
+        )
+        .where(Consultation.id == consultation.id)
+    )
+    consultation_full = result.scalar_one()
+
+    # 兼容两条路径：
+    #   1) 一次性提交（submit-text → fact_key="contract_text"）
+    #   2) 多轮对话（chat_turn → messages + 自动抽取的 facts）
+    # 只要有任一来源即可生成报告。
     if contract_text is None:
-        for fact in reversed(consultation.facts):
+        for fact in consultation_full.facts:
             if fact.fact_key == "contract_text":
                 contract_text = fact.fact_value
                 break
 
-    if not contract_text:
-        yield {"type": "error", "message": "未找到合同文本，请先调用 submit-text"}
+    has_messages = len(consultation_full.messages) > 0
+    has_facts = len(consultation_full.facts) > 0
+    if not contract_text and not has_messages and not has_facts:
+        yield {
+            "type": "error",
+            "message": "尚无任何事实信息，请先提交合同文本或与 AI 对话补充事实",
+        }
         return
 
-    client = get_llm_client()
-    messages = _build_report_prompt(user, consultation.scenario, contract_text)
+    # 知识库检索：合同文本 + 所有 facts + 最近对话
+    search_parts: list[str] = []
+    if contract_text:
+        search_parts.append(contract_text)
+    search_parts.extend(f.fact_value for f in consultation_full.facts)
+    search_parts.extend(m.content for m in consultation_full.messages[-4:])
+    search_text = " ".join(search_parts)
+    knowledge_hits = await search_laws(db, search_text, limit=5)
+
+    messages = build_report_messages(
+        role=user,
+        scenario=consultation.scenario,
+        facts=list(consultation_full.facts),
+        knowledge_hits=knowledge_hits,
+        all_messages=list(consultation_full.messages),
+    )
 
     # 缓冲完整内容（流式收完后一次性解析）
     chunks: list[str] = []

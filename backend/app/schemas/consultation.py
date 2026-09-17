@@ -81,3 +81,38 @@ class GenerateReportResponse(BaseModel):
     disclaimer: str  # 前置免责声明
 
     model_config = {"from_attributes": True}
+
+
+class ConsultationMessageCreate(BaseModel):
+    """用户发一条消息（多轮对话）。"""
+
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class ConsultationMessageResponse(BaseModel):
+    """问诊消息响应。"""
+
+    id: int
+    consultation_id: int
+    role: str  # user / assistant / system
+    content: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ChatTurnResponse(BaseModel):
+    """一轮对话响应（用户消息 + 助手消息 ID）。"""
+
+    consultation_id: int
+    user_message_id: int
+    assistant_message_id: int
+    assistant_content: str  # 完整内容（前端可二次展示）
+    ready_to_report: bool  # 信息已充分建议生成报告
+    fact_count: int
+
+
+class ConsultationDetailResponse(ConsultationResponse):
+    """问诊详情（含 messages）。"""
+
+    messages: list[ConsultationMessageResponse] = []

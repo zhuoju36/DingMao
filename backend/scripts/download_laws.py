@@ -106,7 +106,7 @@ def parse_format(txt_path: Path, max_lines: int = 3) -> list[str]:
 
 def main() -> None:
     snapshot_path = download()
-    file_count = extract_zip(snapshot_path)
+    extract_zip(snapshot_path)
     files = list_files_with_real_names()
     print(f"\n=== 共 {len(files)} 个文件 ===\n")
 

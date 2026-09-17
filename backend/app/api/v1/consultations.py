@@ -22,8 +22,11 @@ from app.models.base import get_db
 from app.models.consultation import Consultation
 from app.models.user import User, UserRole
 from app.schemas.consultation import (
+    ChatTurnResponse,
     ConclusionResponse,
     ConsultationCreate,
+    ConsultationMessageCreate,
+    ConsultationMessageResponse,
     ConsultationResponse,
     FactResponse,
     GenerateReportResponse,
@@ -179,3 +182,60 @@ def _to_response(c: Consultation) -> ConsultationResponse:
         facts=[FactResponse.model_validate(f) for f in c.facts],
         conclusions=[ConclusionResponse.model_validate(c) for c in c.conclusions],
     )
+
+
+# ===== 多轮对话端点（W2-Phase1A）=====
+
+
+@router.post(
+    "/{consultation_id}/messages",
+    response_model=ChatTurnResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_message(
+    consultation_id: int,
+    req: ConsultationMessageCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ChatTurnResponse:
+    """发送一条消息，AI 回复后返回完整对话轮。
+
+    非流式（流式在 W2-Phase1B 引入 EventSource）。
+    """
+    consultation = await _get_consultation(db, consultation_id, user)
+    result = await consultation_engine.chat_turn(
+        db, consultation, user_content=req.content
+    )
+    return ChatTurnResponse(
+        consultation_id=consultation.id,
+        user_message_id=result["user_message_id"],
+        assistant_message_id=result["assistant_message_id"],
+        assistant_content=result["assistant_content"],
+        ready_to_report=result["ready_to_report"],
+        fact_count=result["fact_count"],
+    )
+
+
+@router.get(
+    "/{consultation_id}/messages",
+    response_model=list[ConsultationMessageResponse],
+)
+async def list_messages(
+    consultation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[ConsultationMessageResponse]:
+    """获取问诊所有消息（按时间排序）。"""
+    await _get_consultation(db, consultation_id, user)
+
+    from app.models.consultation import ConsultationMessage
+
+    result = await db.execute(
+        select(ConsultationMessage)
+        .where(ConsultationMessage.consultation_id == consultation_id)
+        .order_by(ConsultationMessage.created_at)
+    )
+    return [
+        ConsultationMessageResponse.model_validate(m)
+        for m in result.scalars().all()
+    ]
