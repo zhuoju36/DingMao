@@ -33,6 +33,8 @@ const streaming = ref(false)
 const firstChunkAt = ref<number | null>(null)
 const totalChunks = ref(0)
 const disclaimer = ref("")
+const aborted = ref(false)
+let streamController: AbortController | null = null
 
 // 滚动容器
 const messagesScrollRef = ref<HTMLElement | null>(null)
@@ -185,11 +187,16 @@ async function startStreaming() {
   errorMsg.value = ""
   firstChunkAt.value = null
   totalChunks.value = 0
+  aborted.value = false
   streaming.value = true
+  streamController = new AbortController()
 
   const t0 = performance.now()
   try {
-    for await (const event of generateReportStream(consultationId.value)) {
+    for await (const event of generateReportStream(
+      consultationId.value,
+      streamController.signal
+    )) {
       if (event.type === "chunk") {
         if (firstChunkAt.value === null) {
           firstChunkAt.value = (performance.now() - t0) / 1000
@@ -208,10 +215,21 @@ async function startStreaming() {
       }
     }
   } catch (e) {
-    errorMsg.value = `流中断: ${e instanceof Error ? e.message : "未知错误"}`
+    if (e instanceof DOMException && e.name === "AbortError") {
+      aborted.value = true
+      reportText.value = ""
+      ElMessage.info("已取消生成")
+    } else {
+      errorMsg.value = `流中断: ${e instanceof Error ? e.message : "未知错误"}`
+    }
   } finally {
     streaming.value = false
+    streamController = null
   }
+}
+
+function stopStreaming() {
+  streamController?.abort()
 }
 
 async function newChat() {
@@ -314,7 +332,7 @@ function backToProject() {
       </div>
 
       <!-- 报告卡片（持久化：来自 DB conclusions） -->
-      <div v-if="hasReport || streaming" ref="reportCardRef" class="report-card">
+      <div v-if="hasReport || streaming || aborted || errorMsg" ref="reportCardRef" class="report-card">
         <!-- 免责声明（AGENTS.md 应用原则 4：前置展示） -->
         <el-alert
           :title="disclaimer || '⚠️ 本报告由 AI 生成，仅供工程人员参考，不构成法律意见。重大决策前请由执业律师复核。'"
@@ -340,6 +358,10 @@ function backToProject() {
             <el-tag v-if="totalChunks > 0" type="info" size="small" class="ml-8">
               {{ totalChunks }} chunks
             </el-tag>
+            <div class="spacer" />
+            <el-button size="small" type="danger" plain @click="stopStreaming">
+              停止生成
+            </el-button>
           </div>
           <pre class="stream-text">{{ reportText }}<span class="cursor">▊</span></pre>
         </div>
@@ -387,6 +409,15 @@ function backToProject() {
           v-if="errorMsg"
           :title="errorMsg"
           type="error"
+          :closable="false"
+          show-icon
+          class="mt-16"
+        />
+
+        <el-alert
+          v-if="aborted"
+          title="已取消生成，可再次点击「生成报告」重试"
+          type="info"
           :closable="false"
           show-icon
           class="mt-16"

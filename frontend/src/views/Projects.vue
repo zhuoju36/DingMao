@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 项目列表 - 接真实后端
-import { onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 import { ElMessage } from "element-plus"
 import apiClient from "@/api"
@@ -26,6 +26,21 @@ const projects = ref<Project[]>([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const creating = ref(false)
+const search = ref("")
+
+// 客户端搜索（MVP：列表上限 20，够用；V2 改为后端查询）
+const filteredProjects = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return projects.value
+  return projects.value.filter((p) => {
+    return (
+      p.name.toLowerCase().includes(q) ||
+      (p.code ?? "").toLowerCase().includes(q) ||
+      (p.location ?? "").toLowerCase().includes(q) ||
+      (p.contractor_org ?? "").toLowerCase().includes(q)
+    )
+  })
+})
 
 // 新建表单
 const form = ref({
@@ -89,17 +104,29 @@ onMounted(fetchProjects)
   <div class="projects-page">
     <div class="page-header flex-between">
       <h2>项目档案</h2>
-      <el-button type="primary" @click="showCreateDialog = true">
-        <el-icon><Plus /></el-icon>
-        新建项目
-      </el-button>
+      <div class="header-actions">
+        <el-input
+          v-model="search"
+          placeholder="搜索项目名称 / 编号 / 地点 / 施工单位"
+          clearable
+          class="search-input"
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+        <el-button type="primary" @click="showCreateDialog = true">
+          <el-icon><Plus /></el-icon>
+          新建项目
+        </el-button>
+      </div>
     </div>
 
     <el-table
       v-loading="loading"
-      :data="projects"
+      :data="filteredProjects"
       stripe
-      empty-text="还没有项目，点击右上角创建"
+      :empty-text="search ? '没有匹配的项目' : '还没有项目，点击右上角创建'"
     >
       <el-table-column prop="code" label="工程编号" width="160">
         <template #default="{ row }">
@@ -179,5 +206,15 @@ onMounted(fetchProjects)
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search-input {
+  width: 320px;
 }
 </style>

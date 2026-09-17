@@ -82,7 +82,8 @@ export type StreamEvent =
  * 使用原生 fetch + ReadableStream 解析（不引第三方库）。
  */
 export async function* generateReportStream(
-  consultationId: number
+  consultationId: number,
+  signal?: AbortSignal
 ): AsyncGenerator<StreamEvent, void, unknown> {
   const token = localStorage.getItem("token") ?? ""
   const response = await fetch(
@@ -90,6 +91,7 @@ export async function* generateReportStream(
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
+      signal,
     }
   )
 
