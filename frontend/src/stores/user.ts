@@ -23,6 +23,10 @@ export const useUserStore = defineStore(
     function setAuth(t: string, info: UserInfo) {
       token.value = t
       userInfo.value = info
+      // 统一在此写入原始 token key：
+      // Axios 拦截器与路由守卫直接读 localStorage（避免循环依赖），
+      // 所以两处必须同步，写入口收敛到这里。
+      localStorage.setItem("token", t)
     }
 
     function logout() {

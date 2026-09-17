@@ -38,7 +38,8 @@ async function handleSubmit() {
 
     const res = await apiClient.post<{ access_token: string }>(url, body)
 
-    // 拿用户信息
+    // 必须先落 localStorage：下面的 /auth/me 会经过 Axios 拦截器读它。
+    // setAuth 内部会再写一次（幂等），保证 store 与 localStorage 一致。
     localStorage.setItem("token", res.access_token)
     const me = await apiClient.get<{
       id: number

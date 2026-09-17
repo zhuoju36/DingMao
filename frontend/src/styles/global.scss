@@ -45,30 +45,5 @@ a {
   margin-bottom: 16px;
 }
 
-/* 风险等级标识 - 三源证据 */
-.evidence-fact {
-  border-left: 3px solid #909399;
-  padding-left: 8px;
-}
-.evidence-law {
-  border-left: 3px solid #409eff;
-  padding-left: 8px;
-}
-.evidence-standard {
-  border-left: 3px solid #f56c6c;
-  padding-left: 8px;
-}
-
-/* 红黄绿分级 */
-.risk-red {
-  color: #f56c6c;
-  font-weight: bold;
-}
-.risk-yellow {
-  color: #e6a23c;
-  font-weight: bold;
-}
-.risk-green {
-  color: #67c23a;
-  font-weight: bold;
-}
+// 说明：红黄绿风险配色与三源证据（🟦🟨🟥）样式已收敛到
+// Consultation.vue 的 scoped style，全局不再定义，避免无人引用的死样式。

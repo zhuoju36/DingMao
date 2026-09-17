@@ -54,17 +54,6 @@ export async function createConsultation(
   return r as unknown as Consultation
 }
 
-export async function submitContractText(
-  consultationId: number,
-  content: string
-): Promise<Consultation> {
-  const r = await apiClient.post<Consultation>(
-    `/consultations/${consultationId}/submit-text`,
-    { content }
-  )
-  return r as unknown as Consultation
-}
-
 export async function getConsultation(id: number): Promise<Consultation> {
   const r = await apiClient.get<Consultation>(`/consultations/${id}`)
   return r as unknown as Consultation
