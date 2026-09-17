@@ -30,8 +30,9 @@ const displayName = computed(
 const activeNav = computed(() => {
   const p = route.path
   if (p.startsWith("/projects")) return "/projects"
-  if (p.startsWith("/consultation")) return "/projects"
   if (p.startsWith("/scenarios")) return "/scenarios"
+  // 问诊页可能来自「项目」或「场景」两个入口，不硬指向某一项，避免误导
+  if (p.startsWith("/consultation")) return ""
   return "/dashboard"
 })
 
@@ -72,6 +73,7 @@ function handleNav(path: string) {
       >
         <el-menu-item index="/dashboard">工作台</el-menu-item>
         <el-menu-item index="/projects">项目档案</el-menu-item>
+        <el-menu-item index="/scenarios">场景中心</el-menu-item>
       </el-menu>
 
       <div class="spacer" />

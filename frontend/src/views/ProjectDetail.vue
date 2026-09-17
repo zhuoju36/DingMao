@@ -9,6 +9,7 @@ import {
   listProjectConsultations,
   type ConsultationListItem,
 } from "@/api/consultation"
+import { SCENARIOS } from "@/constants/scenarios"
 
 interface Project {
   id: number
@@ -127,6 +128,37 @@ function fmtTime(v: string) {
   return v ? v.slice(0, 16).replace("T", " ") : "—"
 }
 
+// 本项目下各场景的统计（供概览页场景网格使用）
+const scenarioTiles = computed(() => {
+  const byScenario: Record<string, ConsultationListItem[]> = {
+    contract_review: contractConsultations.value,
+    variation: variationConsultations.value,
+  }
+  return SCENARIOS.map((s) => {
+    const list = byScenario[s.key] ?? []
+    return {
+      ...s,
+      total: list.length,
+      inProgress: list.filter((c) => c.status === "in_progress").length,
+      reportCount: list.filter((c) => c.conclusion_count > 0).length,
+    }
+  })
+})
+
+/** 概览页点场景卡片：可用的切到对应 Tab，规划中的提示 */
+function onTileClick(key: string, status: string) {
+  if (status !== "available") {
+    ElMessage.info("该场景正在规划中，敬请期待")
+    return
+  }
+  activeTab.value = key === "contract_review" ? "contract" : "variation"
+}
+
+/** 从概览的「全部问诊」入口跳到场景中心 */
+function goScenarioCenter() {
+  router.push("/scenarios")
+}
+
 onMounted(fetchData)
 </script>
 
@@ -152,21 +184,64 @@ onMounted(fetchData)
         <!-- 概览 -->
         <el-tab-pane label="概览" name="overview">
           <el-empty v-if="!project && !loading" description="项目不存在或加载失败" />
-          <el-descriptions v-else-if="project" :column="2" border>
-            <el-descriptions-item label="项目名称">{{ fmt(project.name) }}</el-descriptions-item>
-            <el-descriptions-item label="工程编号">{{ fmt(project.code) }}</el-descriptions-item>
-            <el-descriptions-item label="工程地点">{{ fmt(project.location) }}</el-descriptions-item>
-            <el-descriptions-item label="合同金额">{{ fmtMoney(project.contract_amount) }}</el-descriptions-item>
-            <el-descriptions-item label="开工日期">{{ fmt(project.contract_start_date) }}</el-descriptions-item>
-            <el-descriptions-item label="竣工日期">{{ fmt(project.contract_end_date) }}</el-descriptions-item>
-            <el-descriptions-item label="建设单位">{{ fmt(project.owner_org) }}</el-descriptions-item>
-            <el-descriptions-item label="施工单位">{{ fmt(project.contractor_org) }}</el-descriptions-item>
-            <el-descriptions-item label="设计单位">{{ fmt(project.design_org) }}</el-descriptions-item>
-            <el-descriptions-item label="监理单位">{{ fmt(project.supervisor_org) }}</el-descriptions-item>
-            <el-descriptions-item v-if="project.description" label="项目描述" :span="2">
-              {{ project.description }}
-            </el-descriptions-item>
-          </el-descriptions>
+          <template v-else-if="project">
+            <!-- 场景卡片网格：本项目在各场景下的事务 -->
+            <div class="section-head">
+              <span class="section-title">本项目下场景</span>
+              <div class="spacer" />
+              <el-button text type="primary" size="small" @click="goScenarioCenter">
+                场景中心（跨项目）→
+              </el-button>
+            </div>
+
+            <div class="tile-grid mb-16">
+              <div
+                v-for="t in scenarioTiles"
+                :key="t.key"
+                :class="['tile', { planned: t.status !== 'available' }]"
+                @click="onTileClick(t.key, t.status)"
+              >
+                <div class="tile-head">
+                  <span class="tile-icon">{{ t.icon }}</span>
+                  <span class="tile-name">{{ t.name }}</span>
+                  <div class="spacer" />
+                  <el-tag v-if="t.status !== 'available'" size="small" type="info">
+                    规划中
+                  </el-tag>
+                  <el-tag v-else-if="t.inProgress" size="small" type="warning">
+                    {{ t.inProgress }} 待继续
+                  </el-tag>
+                </div>
+                <div class="tile-metrics">
+                  <template v-if="t.status === 'available'">
+                    <span>{{ t.total }} 条问诊</span>
+                    <span v-if="t.reportCount">· {{ t.reportCount }} 份报告</span>
+                    <span v-else-if="!t.total" class="muted">尚未开始</span>
+                  </template>
+                  <span v-else class="muted">{{ t.description }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section-head">
+              <span class="section-title">项目信息</span>
+            </div>
+            <el-descriptions :column="2" border>
+              <el-descriptions-item label="项目名称">{{ fmt(project.name) }}</el-descriptions-item>
+              <el-descriptions-item label="工程编号">{{ fmt(project.code) }}</el-descriptions-item>
+              <el-descriptions-item label="工程地点">{{ fmt(project.location) }}</el-descriptions-item>
+              <el-descriptions-item label="合同金额">{{ fmtMoney(project.contract_amount) }}</el-descriptions-item>
+              <el-descriptions-item label="开工日期">{{ fmt(project.contract_start_date) }}</el-descriptions-item>
+              <el-descriptions-item label="竣工日期">{{ fmt(project.contract_end_date) }}</el-descriptions-item>
+              <el-descriptions-item label="建设单位">{{ fmt(project.owner_org) }}</el-descriptions-item>
+              <el-descriptions-item label="施工单位">{{ fmt(project.contractor_org) }}</el-descriptions-item>
+              <el-descriptions-item label="设计单位">{{ fmt(project.design_org) }}</el-descriptions-item>
+              <el-descriptions-item label="监理单位">{{ fmt(project.supervisor_org) }}</el-descriptions-item>
+              <el-descriptions-item v-if="project.description" label="项目描述" :span="2">
+                {{ project.description }}
+              </el-descriptions-item>
+            </el-descriptions>
+          </template>
         </el-tab-pane>
 
         <!-- 合同审查 -->
@@ -334,6 +409,78 @@ onMounted(fetchData)
 
 .tab-badge {
   margin-left: 6px;
+}
+
+/* 概览页：场景卡片网格 */
+.section-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.section-title {
+  font-weight: 600;
+  color: #303133;
+  font-size: 14px;
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.tile {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: #fff;
+}
+
+.tile:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.12);
+}
+
+.tile.planned {
+  background: #fafafa;
+  cursor: default;
+}
+
+.tile.planned:hover {
+  border-color: #ebeef5;
+  box-shadow: none;
+}
+
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tile-icon {
+  font-size: 16px;
+}
+
+.tile-name {
+  font-weight: 600;
+  color: #303133;
+  font-size: 14px;
+}
+
+.tile-metrics {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
+}
+
+.tile-metrics .muted {
+  color: #c0c4cc;
 }
 
 /* 问诊列表 */
