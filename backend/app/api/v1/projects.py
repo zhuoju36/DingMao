@@ -3,12 +3,15 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_current_user
 from app.core.exceptions import PermissionDeniedError
 from app.models.base import get_db
+from app.models.consultation import Consultation
 from app.models.project import Project
 from app.models.user import User
+from app.schemas.consultation import ConsultationListItem, ConsultationListResponse
 from app.schemas.project import (
     ProjectCreate,
     ProjectListResponse,
@@ -92,6 +95,61 @@ async def get_project(
     """项目详情。"""
     project = await _get_owned_project(db, project_id, user)
     return _to_response(project)
+
+
+@router.get("/{project_id}/consultations", response_model=ConsultationListResponse)
+async def list_project_consultations(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    scenario: str | None = None,
+    limit: int = 50,
+) -> ConsultationListResponse:
+    """列出项目下的问诊（可按 scenario 过滤）。
+
+    用于项目详情页的「历史问诊」列表。
+    """
+    await _get_owned_project(db, project_id, user)
+
+    stmt = (
+        select(Consultation)
+        .where(Consultation.project_id == project_id)
+        .options(
+            selectinload(Consultation.conclusions),
+            selectinload(Consultation.facts),
+        )
+        .order_by(Consultation.created_at.desc())
+        .limit(limit)
+    )
+    if scenario:
+        stmt = stmt.where(Consultation.scenario == scenario)
+
+    rows = (await db.execute(stmt)).scalars().all()
+
+    items: list[ConsultationListItem] = []
+    for c in rows:
+        red = sum(1 for x in c.conclusions if x.level == "red")
+        yellow = sum(1 for x in c.conclusions if x.level == "yellow")
+        green = sum(1 for x in c.conclusions if x.level == "green")
+        items.append(
+            ConsultationListItem(
+                id=c.id,
+                scenario=c.scenario,
+                status=c.status,
+                summary=c.dispute_summary_ai,
+                fact_count=len(c.facts),
+                conclusion_count=len(c.conclusions),
+                red_count=red,
+                yellow_count=yellow,
+                green_count=green,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+        )
+
+    return ConsultationListResponse(
+        project_id=project_id, items=items, total=len(items)
+    )
 
 
 def _to_response(p: Project) -> ProjectResponse:

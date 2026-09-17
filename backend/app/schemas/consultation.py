@@ -116,3 +116,25 @@ class ConsultationDetailResponse(ConsultationResponse):
     """问诊详情（含 messages）。"""
 
     messages: list[ConsultationMessageResponse] = []
+
+
+class ConsultationListItem(BaseModel):
+    """项目下问诊列表项（不含 messages/conclusions 明细，用于列表展示）。"""
+
+    id: int
+    scenario: str
+    status: str
+    summary: str | None = None  # dispute_summary_ai
+    fact_count: int = 0
+    conclusion_count: int = 0
+    red_count: int = 0
+    yellow_count: int = 0
+    green_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsultationListResponse(BaseModel):
+    project_id: int
+    items: list[ConsultationListItem]
+    total: int

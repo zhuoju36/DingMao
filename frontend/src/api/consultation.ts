@@ -161,3 +161,30 @@ export async function listMessages(
   )
   return r as unknown as ConsultationMessage[]
 }
+
+// === 项目下问诊列表 ===
+
+export interface ConsultationListItem {
+  id: number
+  scenario: string
+  status: string
+  summary: string | null
+  fact_count: number
+  conclusion_count: number
+  red_count: number
+  yellow_count: number
+  green_count: number
+  created_at: string
+  updated_at: string
+}
+
+export async function listProjectConsultations(
+  projectId: number,
+  scenario?: ConsultationScenario
+): Promise<ConsultationListItem[]> {
+  const query = scenario ? `?scenario=${scenario}` : ""
+  const r = await apiClient.get<{ items: ConsultationListItem[]; total: number }>(
+    `/projects/${projectId}/consultations${query}`
+  )
+  return (r as unknown as { items: ConsultationListItem[] }).items
+}

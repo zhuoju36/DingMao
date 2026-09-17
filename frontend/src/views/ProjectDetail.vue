@@ -1,9 +1,14 @@
 <script setup lang="ts">
-// 项目详情 - 接真实后端
+// 项目详情 - 项目元数据 + 各场景历史问诊
 import { computed, onMounted, ref } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import { ElMessage } from "element-plus"
+import { ElMessage, ElMessageBox } from "element-plus"
 import apiClient from "@/api"
+import {
+  createConsultation,
+  listProjectConsultations,
+  type ConsultationListItem,
+} from "@/api/consultation"
 
 interface Project {
   id: number
@@ -21,55 +26,92 @@ interface Project {
   contractor_org: string | null
 }
 
-interface Consultation {
-  id: number
-  project_id: number
-  scenario: string
-  status: string
-  dispute_summary_ai: string | null
-  created_at: string
-  conclusions: { level: string; title: string }[]
-}
-
 const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => Number(route.params.id))
 
 const project = ref<Project | null>(null)
-const consultations = ref<Consultation[]>([])
 const loading = ref(false)
+const loadError = ref("")
 const activeTab = ref("overview")
 const starting = ref<string | null>(null)
 
+// 各场景的历史问诊
+const contractConsultations = ref<ConsultationListItem[]>([])
+const variationConsultations = ref<ConsultationListItem[]>([])
+
+const statusMeta: Record<string, { label: string; type: "success" | "warning" | "info" }> = {
+  in_progress: { label: "进行中", type: "warning" },
+  completed: { label: "已完成", type: "success" },
+  abandoned: { label: "已废弃", type: "info" },
+}
+
 async function fetchData() {
   loading.value = true
+  loadError.value = ""
   try {
     project.value = await apiClient.get<Project>(`/projects/${projectId.value}`)
-    // 拉项目下的问诊（用 list 项目端点拿到 consultations 关联）
-    // 后端 ProjectResponse 没带 consultations 列表，所以从 detail 单独拉
-    // 这里简化：前端存一份 token 后让用户进 /consultations/{id} 看详情
-  } catch {
-    ElMessage.error("加载项目失败")
+    const [c1, c2] = await Promise.all([
+      listProjectConsultations(projectId.value, "contract_review"),
+      listProjectConsultations(projectId.value, "variation"),
+    ])
+    contractConsultations.value = c1
+    variationConsultations.value = c2
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : "加载项目失败"
   } finally {
     loading.value = false
   }
 }
 
+/**
+ * 开始问诊（智能续聊）：
+ * - 若该场景下有「进行中」的问诊 → 弹窗让用户选择继续/新建
+ * - 否则直接新建
+ */
 async function startConsultation(scenario: "contract_review" | "variation") {
+  const existing =
+    scenario === "contract_review" ? contractConsultations.value : variationConsultations.value
+  const inProgress = existing.find((c) => c.status === "in_progress")
+
+  if (inProgress) {
+    try {
+      await ElMessageBox.confirm(
+        `该场景下有一个进行中的问诊 #${inProgress.id}（已采集 ${inProgress.fact_count} 条事实）。要继续它，还是新建一个？`,
+        "继续还是新建？",
+        {
+          distinguishCancelAndClose: true,
+          confirmButtonText: "继续上次",
+          cancelButtonText: "新建问诊",
+          type: "info",
+        }
+      )
+      // 确认 = 继续
+      router.push(`/consultation/${inProgress.id}`)
+      return
+    } catch (action) {
+      if (action === "cancel") {
+        // 取消按钮 = 新建，继续往下走
+      } else {
+        return // 关闭弹窗 = 什么都不做
+      }
+    }
+  }
+
   starting.value = scenario
   try {
-    const created = await apiClient.post<{ id: number }>("/consultations", {
-      project_id: projectId.value,
-      scenario,
-    })
+    const created = await createConsultation(projectId.value, scenario)
     ElMessage.success(`问诊已创建 #${created.id}`)
     router.push(`/consultation/${created.id}`)
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "创建失败"
-    ElMessage.error(msg)
+    ElMessage.error(e instanceof Error ? e.message : "创建失败")
   } finally {
     starting.value = null
   }
+}
+
+function openConsultation(id: number) {
+  router.push(`/consultation/${id}`)
 }
 
 function fmt(v: string | null | undefined) {
@@ -80,6 +122,11 @@ function fmtMoney(v: string | null | undefined) {
   return v ? `¥ ${Number(v).toLocaleString()}` : "—"
 }
 
+function fmtTime(v: string) {
+  // 后端返回 ISO，展示为 YYYY-MM-DD HH:MM
+  return v ? v.slice(0, 16).replace("T", " ") : "—"
+}
+
 onMounted(fetchData)
 </script>
 
@@ -87,21 +134,25 @@ onMounted(fetchData)
   <div class="project-detail">
     <el-page-header @back="router.push('/projects')" class="mb-16">
       <template #content>
-        <span class="page-title">
-          {{ project?.name || `项目 #${projectId}` }}
-        </span>
+        <span class="page-title">{{ project?.name || `项目 #${projectId}` }}</span>
       </template>
     </el-page-header>
+
+    <el-alert
+      v-if="loadError"
+      :title="`加载项目失败：${loadError}`"
+      type="error"
+      :closable="false"
+      show-icon
+      class="mb-16"
+    />
 
     <div v-loading="loading">
       <el-tabs v-model="activeTab">
         <!-- 概览 -->
         <el-tab-pane label="概览" name="overview">
-          <el-empty
-            v-if="!project"
-            description="项目不存在或加载失败"
-          />
-          <el-descriptions v-else :column="2" border>
+          <el-empty v-if="!project && !loading" description="项目不存在或加载失败" />
+          <el-descriptions v-else-if="project" :column="2" border>
             <el-descriptions-item label="项目名称">{{ fmt(project.name) }}</el-descriptions-item>
             <el-descriptions-item label="工程编号">{{ fmt(project.code) }}</el-descriptions-item>
             <el-descriptions-item label="工程地点">{{ fmt(project.location) }}</el-descriptions-item>
@@ -112,44 +163,136 @@ onMounted(fetchData)
             <el-descriptions-item label="施工单位">{{ fmt(project.contractor_org) }}</el-descriptions-item>
             <el-descriptions-item label="设计单位">{{ fmt(project.design_org) }}</el-descriptions-item>
             <el-descriptions-item label="监理单位">{{ fmt(project.supervisor_org) }}</el-descriptions-item>
-            <el-descriptions-item
-              v-if="project.description"
-              label="项目描述"
-              :span="2"
-            >
+            <el-descriptions-item v-if="project.description" label="项目描述" :span="2">
               {{ project.description }}
             </el-descriptions-item>
           </el-descriptions>
         </el-tab-pane>
 
         <!-- 合同审查 -->
-        <el-tab-pane label="合同审查" name="contract">
+        <el-tab-pane name="contract">
+          <template #label>
+            合同审查
+            <el-badge
+              v-if="contractConsultations.length"
+              :value="contractConsultations.length"
+              class="tab-badge"
+            />
+          </template>
+
+          <el-empty
+            v-if="contractConsultations.length === 0"
+            description="还没有合同审查记录"
+          />
+          <div v-else class="consult-list">
+            <div
+              v-for="c in contractConsultations"
+              :key="c.id"
+              class="consult-item"
+              @click="openConsultation(c.id)"
+            >
+              <div class="item-head">
+                <span class="item-id">#{{ c.id }}</span>
+                <el-tag size="small" :type="statusMeta[c.status]?.type ?? 'info'">
+                  {{ statusMeta[c.status]?.label ?? c.status }}
+                </el-tag>
+                <span class="item-time">{{ fmtTime(c.created_at) }}</span>
+                <div class="spacer" />
+                <el-button text type="primary" size="small">
+                  {{ c.status === "completed" ? "查看报告" : "继续对话" }}
+                </el-button>
+              </div>
+              <div v-if="c.summary" class="item-summary">{{ c.summary }}</div>
+              <div class="item-stats">
+                <span>事实 {{ c.fact_count }}</span>
+                <template v-if="c.conclusion_count">
+                  <el-tag v-if="c.red_count" type="danger" size="small" class="ml-8">
+                    红线 {{ c.red_count }}
+                  </el-tag>
+                  <el-tag v-if="c.yellow_count" type="warning" size="small" class="ml-8">
+                    黄区 {{ c.yellow_count }}
+                  </el-tag>
+                  <el-tag v-if="c.green_count" type="success" size="small" class="ml-8">
+                    可控 {{ c.green_count }}
+                  </el-tag>
+                </template>
+                <span v-else class="muted ml-8">尚未生成报告</span>
+              </div>
+            </div>
+          </div>
+
           <el-button
             type="primary"
+            class="mt-16"
             :loading="starting === 'contract_review'"
             @click="startConsultation('contract_review')"
           >
             <el-icon><Plus /></el-icon>
-            开始合同审查
+            {{ contractConsultations.length ? "开始新合同审查" : "开始合同审查" }}
           </el-button>
-          <p class="mt-16">
-            <small>合同审查将基于本项目的合同条款，由 AI 助手识别风险条款。</small>
-          </p>
         </el-tab-pane>
 
         <!-- 变更扯皮 -->
-        <el-tab-pane label="变更扯皮" name="variation">
+        <el-tab-pane name="variation">
+          <template #label>
+            变更扯皮
+            <el-badge
+              v-if="variationConsultations.length"
+              :value="variationConsultations.length"
+              class="tab-badge"
+            />
+          </template>
+
+          <el-empty
+            v-if="variationConsultations.length === 0"
+            description="还没有变更扯皮记录"
+          />
+          <div v-else class="consult-list">
+            <div
+              v-for="c in variationConsultations"
+              :key="c.id"
+              class="consult-item"
+              @click="openConsultation(c.id)"
+            >
+              <div class="item-head">
+                <span class="item-id">#{{ c.id }}</span>
+                <el-tag size="small" :type="statusMeta[c.status]?.type ?? 'info'">
+                  {{ statusMeta[c.status]?.label ?? c.status }}
+                </el-tag>
+                <span class="item-time">{{ fmtTime(c.created_at) }}</span>
+                <div class="spacer" />
+                <el-button text type="primary" size="small">
+                  {{ c.status === "completed" ? "查看报告" : "继续对话" }}
+                </el-button>
+              </div>
+              <div v-if="c.summary" class="item-summary">{{ c.summary }}</div>
+              <div class="item-stats">
+                <span>事实 {{ c.fact_count }}</span>
+                <template v-if="c.conclusion_count">
+                  <el-tag v-if="c.red_count" type="danger" size="small" class="ml-8">
+                    红线 {{ c.red_count }}
+                  </el-tag>
+                  <el-tag v-if="c.yellow_count" type="warning" size="small" class="ml-8">
+                    黄区 {{ c.yellow_count }}
+                  </el-tag>
+                  <el-tag v-if="c.green_count" type="success" size="small" class="ml-8">
+                    可控 {{ c.green_count }}
+                  </el-tag>
+                </template>
+                <span v-else class="muted ml-8">尚未生成报告</span>
+              </div>
+            </div>
+          </div>
+
           <el-button
             type="primary"
+            class="mt-16"
             :loading="starting === 'variation'"
             @click="startConsultation('variation')"
           >
             <el-icon><Plus /></el-icon>
-            开始变更问诊
+            {{ variationConsultations.length ? "开始新变更问诊" : "开始变更问诊" }}
           </el-button>
-          <p class="mt-16">
-            <small>变更扯皮场景帮助您梳理变更事实，评估签证/索赔风险。</small>
-          </p>
         </el-tab-pane>
 
         <!-- 归档文件 -->
@@ -179,5 +322,76 @@ onMounted(fetchData)
 
 .mt-16 {
   margin-top: 16px;
+}
+
+.ml-8 {
+  margin-left: 8px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.tab-badge {
+  margin-left: 6px;
+}
+
+/* 问诊列表 */
+.consult-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.consult-item {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.consult-item:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.12);
+}
+
+.item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.item-id {
+  font-weight: 600;
+  color: #303133;
+}
+
+.item-time {
+  color: #909399;
+  font-size: 12px;
+}
+
+.item-summary {
+  margin-top: 8px;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.item-stats {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: #909399;
+}
+
+.muted {
+  color: #c0c4cc;
 }
 </style>
