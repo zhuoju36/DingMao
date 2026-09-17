@@ -30,7 +30,7 @@
 ## 目录结构
 
 ```
-lawyer/
+DingMao/
 ├── backend/          # FastAPI 后端
 ├── frontend/         # Vue 3 前端
 ├── knowledge-base/   # 知识库原始数据

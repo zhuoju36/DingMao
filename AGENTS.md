@@ -82,7 +82,7 @@ AGENTS.md 是**索引**，不是手册。所有细节下沉到 `docs/` 下对应
 完整目录树与命名规范见 `docs/coding/conventions.md`。
 
 ```
-lawyer/
+DingMao/
 ├── backend/          # FastAPI 后端（Python 3.11）
 ├── frontend/         # Vue 3 前端（Vite + TS + Element Plus）
 ├── knowledge-base/   # 知识库原始数据 + 结构化脚本

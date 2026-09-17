@@ -11,7 +11,7 @@ const userStore = useUserStore()
 
 const mode = ref<"login" | "register">("login")
 // 仅在开发环境预填演示账号，生产环境留空
-const email = ref(import.meta.env.DEV ? "demo@lawyer.com" : "")
+const email = ref(import.meta.env.DEV ? "demo@dingmao.com" : "")
 const password = ref(import.meta.env.DEV ? "Demo123456" : "")
 const fullName = ref("")
 const role = ref<"owner" | "designer" | "supervisor" | "contractor" | "subcontractor">(

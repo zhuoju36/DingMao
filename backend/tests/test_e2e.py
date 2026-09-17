@@ -23,7 +23,7 @@ async def test_health(client: AsyncClient) -> None:
 
 async def test_register_and_login(client: AsyncClient) -> str:
     """注册 + 登录，返回 access_token。"""
-    email = f"test{random.randint(10000, 99999)}@lawyer.com"
+    email = f"test{random.randint(10000, 99999)}@dingmao.com"
     password = "testpass123"
 
     # 注册
@@ -47,13 +47,13 @@ async def test_register_and_login(client: AsyncClient) -> str:
     )
     assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
     token = r.json()["access_token"]
-    print(f"✓ 登录成功")
+    print("✓ 登录成功")
 
     # me
     r = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert r.json()["email"] == email
-    print(f"✓ /auth/me 正确")
+    print("✓ /auth/me 正确")
 
     return token
 

@@ -39,7 +39,7 @@ export const useUserStore = defineStore(
   },
   {
     persist: {
-      key: "lawyer-user",
+      key: "dingmao-user",
       storage: localStorage,
     },
   },

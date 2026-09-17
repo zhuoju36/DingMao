@@ -9,12 +9,12 @@ services:
   # PostgreSQL 16
   postgres:
     image: postgres:16-alpine
-    container_name: lawyer-postgres
+    container_name: dingmao-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-lawyer}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lawyer_dev_password}
-      POSTGRES_DB: ${POSTGRES_DB:-lawyer}
+      POSTGRES_USER: ${POSTGRES_USER:-dingmao}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dingmao_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-dingmao}
     ports:
       - "5432:5432"
     volumes:
@@ -22,7 +22,7 @@ services:
       # 初始化脚本（如有）
       # - ./initdb.d:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lawyer}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dingmao}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -30,7 +30,7 @@ services:
   # Redis 7
   redis:
     image: redis:7-alpine
-    container_name: lawyer-redis
+    container_name: dingmao-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -48,7 +48,7 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
-    container_name: lawyer-backend
+    container_name: dingmao-backend
     restart: unless-stopped
     env_file:
       - ../backend/.env
@@ -70,7 +70,7 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
-    container_name: lawyer-frontend
+    container_name: dingmao-frontend
     restart: unless-stopped
     ports:
       - "5173:80"

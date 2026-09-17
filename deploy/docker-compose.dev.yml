@@ -4,25 +4,25 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: lawyer-postgres-dev
+    container_name: dingmao-postgres-dev
     restart: unless-stopped
     environment:
-      POSTGRES_USER: lawyer
-      POSTGRES_PASSWORD: lawyer_dev_password
-      POSTGRES_DB: lawyer
+      POSTGRES_USER: dingmao
+      POSTGRES_PASSWORD: dingmao_dev_password
+      POSTGRES_DB: dingmao
     ports:
       - "5432:5432"
     volumes:
       - postgres_data_dev:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lawyer"]
+      test: ["CMD-SHELL", "pg_isready -U dingmao"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: lawyer-redis-dev
+    container_name: dingmao-redis-dev
     restart: unless-stopped
     ports:
       - "6379:6379"

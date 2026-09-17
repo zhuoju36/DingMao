@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     # ====== 数据库 ======
     postgres_host: str = "localhost"
     postgres_port: int = 5432
-    postgres_user: str = "lawyer"
-    postgres_password: str = "lawyer"
-    postgres_db: str = "lawyer"
+    postgres_user: str = "dingmao"
+    postgres_password: str = "dingmao_dev_password"
+    postgres_db: str = "dingmao"
 
     @property
     def database_url(self) -> str:
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     cos_secret_id: str = ""
     cos_secret_key: str = ""
     cos_region: str = "ap-guangzhou"
-    cos_bucket: str = "lawyer-files-dev"
+    cos_bucket: str = "dingmao-files-dev"
 
     # ====== JWT ======
     jwt_secret_key: str = Field(min_length=16)
