@@ -1,0 +1,71 @@
+[project]
+name = "lawyer-backend"
+version = "0.1.0"
+description = "建工法律顾问 - 后端"
+requires-python = ">=3.11"
+dependencies = [
+    # ====== Web 框架 ======
+    "fastapi>=0.115.5",
+    "uvicorn[standard]>=0.32.1",
+    # ====== 数据校验 ======
+    "pydantic>=2.10.3",
+    "pydantic-settings>=2.7.0",
+    # ====== 数据库 ======
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    # ====== Redis / 队列 ======
+    "redis>=5.2.1",
+    "arq>=0.26.3",
+    # ====== LLM ======
+    "openai>=1.60.2",  # MiniMax-M3 / DeepSeek-V4-Flash 兼容 OpenAI SDK
+    "tenacity>=9.0.0",  # LLM 调用重试
+    # ====== 模板引擎 ======
+    "jinja2>=3.1.4",
+    # ====== 文档解析 ======
+    "pdfplumber>=0.11.4",
+    "pymupdf>=1.25.1",
+    "paddleocr>=3.0.0",
+    "python-multipart>=0.0.20",  # FastAPI 文件上传
+    # ====== 认证 ======
+    "bcrypt>=4.0",
+    "python-jose[cryptography]>=3.3.0",
+    "email-validator>=2.2.0",
+    # ====== 工具 ======
+    "python-dotenv>=1.0.1",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.4",
+    "mypy>=1.13.0",
+    "types-passlib>=1.7.7.20241221",
+]
+
+[tool.uv]
+# 我们不是库，是应用
+package = false
+# 锁定 Python 版本（与 .python-version 一致）
+# python = "3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+# 忽略的规则:
+# - E501: 行长度交给 formatter
+# - B008: FastAPI Depends() 标准用法误报
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+# mypy 配置统一在 mypy.ini（本节只保留占位，避免 mypy 找不到配置）
+# 详见 mypy.ini
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

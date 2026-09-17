@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+uv-cache/
+.env
+.env.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# uv 临时文件（uv.lock 必须入库，不忽略）
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 数据
+data/
+*.db
+*.sqlite

@@ -1,0 +1,74 @@
+// 全局样式
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #f5f7fa;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 工具类 */
+.text-center {
+  text-align: center;
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mt-16 {
+  margin-top: 16px;
+}
+
+.mb-16 {
+  margin-bottom: 16px;
+}
+
+/* 风险等级标识 - 三源证据 */
+.evidence-fact {
+  border-left: 3px solid #909399;
+  padding-left: 8px;
+}
+.evidence-law {
+  border-left: 3px solid #409eff;
+  padding-left: 8px;
+}
+.evidence-standard {
+  border-left: 3px solid #f56c6c;
+  padding-left: 8px;
+}
+
+/* 红黄绿分级 */
+.risk-red {
+  color: #f56c6c;
+  font-weight: bold;
+}
+.risk-yellow {
+  color: #e6a23c;
+  font-weight: bold;
+}
+.risk-green {
+  color: #67c23a;
+  font-weight: bold;
+}

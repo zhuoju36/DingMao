@@ -1,0 +1,84 @@
+# ============================================
+# 顶层 .gitignore - 跨前后端 + 知识库的全局规则
+# ============================================
+# 说明：
+# - backend/ 和 frontend/ 各自有更细的 .gitignore
+# - 本文件只管根目录级别的"大块"和"敏感"内容
+# - 规则按"目录/类别"分组，方便维护
+
+# ---------- 环境变量 / 密钥 ----------
+# 所有 .env 文件不进 git（含 backend/.env、frontend/.env、根 .env）
+.env
+.env.local
+.env.*.local
+
+# 注意：backend/.env.example 和 frontend/.env.example 必须入库（模板）
+
+# ---------- Python（跨整个项目） ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# 后端虚拟环境（uv 创建在 backend/.venv/，frontend 不应有）
+backend/.venv/
+backend/uv-cache/
+
+# ---------- Node / 前端 ----------
+# frontend/node_modules/ 由 frontend/.gitignore 处理，这里只兜底
+node_modules/
+
+# ---------- 知识库（PDF 数据） ----------
+# dengcao 法律数据集 - 含 Apache 2.0 数据，但我们不直接 commit
+# （数据来自外部下载，源数据可以重新下载）
+knowledge-base/laws/dengcao-source/
+
+# 31 本住建部强标 PDF - 体积大（200+ MB），源数据可重新下载
+knowledge-base/standards/mohurd-source/
+
+# LLM 模型权重（不本地跑模型，但防止误 commit）
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# ---------- 数据库与临时文件 ----------
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# Docker 临时卷（部署用，部署时用 git 排除 .gitignore）
+.docker-tmp/
+
+# ---------- IDE / 编辑器 ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------- 测试 / 覆盖率 ----------
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
+# ---------- 杂项 ----------
+# 临时文件
+*.tmp
+*.bak
+*.orig
+
+# 系统文件
+*.swp
+.Trashes
+
+# uv（如果以后在根目录用）
+uv.lock

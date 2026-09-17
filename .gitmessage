@@ -1,0 +1,21 @@
+# <type>(<scope>): <subject>
+#
+# <body>
+#
+# <footer>
+#
+# type: feat | fix | docs | style | refactor | test | chore
+# scope: backend | frontend | knowledge | docs | deploy | ci
+#
+# subject: 不超过 50 字，祈使句，首字母不大写，结尾无句号
+# body:   解释 what + why，每行不超过 72 字
+# footer: BREAKING CHANGE / Closes #123 / Refs #456
+#
+# 示例:
+# feat(backend): 增加真实 LLM 流式报告端点
+#
+# - 新增 POST /consultations/{id}/generate-report-stream
+# - 响应 application/x-ndjson
+# - 已用 MiniMax-M3 验证 P50=11s
+#
+# Refs AGENTS.md 第二节"开发原则"
