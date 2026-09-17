@@ -1,4 +1,4 @@
-# 建工法律顾问 / AGENTS.md
+# 钉铆 / AGENTS.md
 
 > 项目导航与协作约定。**不放具体代码**，所有细则在 `docs/` 下按需查阅。
 
@@ -8,7 +8,7 @@
 
 | 项 | 值 |
 |---|---|
-| 项目名 | 建工法律顾问 (Lawyer) |
+| 项目名 | 钉铆 (DingMao) |
 | 项目所有者 | 1 人独立开发 |
 | 创建日期 | 2026-05 |
 | 适用对象 | 项目所有者 + AI 编码助手（Claude Code、Cursor、ChatGPT、DeepSeek Harness 等） |

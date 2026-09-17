@@ -74,8 +74,8 @@ function toggleMode() {
 <template>
   <div class="login-page flex-center">
     <el-card class="login-card" shadow="always">
-      <h2 class="text-center">建工法律顾问</h2>
-      <p class="text-center subtitle">MVP 阶段 · 合同审查场景</p>
+      <h2 class="text-center">钉铆</h2>
+      <p class="text-center subtitle">钉是钉，铆是铆 —— 讲法律，讲合规</p>
 
       <div class="mode-tabs">
         <el-radio-group v-model="mode" size="default">

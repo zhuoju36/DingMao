@@ -1,6 +1,8 @@
-# 建工法律顾问 (Lawyer)
+# 钉铆 (DingMao)
 
 > 面向设计院、监理、咨询机构的 AI 法律助手 MVP
+>
+> **钉是钉，铆是铆** —— 讲法律，讲合规，不打马虎眼
 
 [![Status](https://img.shields.io/badge/status-MVP-yellow)]()
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20Vue3-blue)]()

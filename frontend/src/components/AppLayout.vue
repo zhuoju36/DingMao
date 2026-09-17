@@ -61,7 +61,7 @@ function handleNav(path: string) {
     <header class="app-header">
       <div class="brand" @click="handleNav('/dashboard')">
         <span class="logo">⚖️</span>
-        <span class="title">建工法律顾问</span>
+        <span class="title">钉铆</span>
       </div>
 
       <el-menu

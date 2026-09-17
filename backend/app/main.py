@@ -30,7 +30,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="建工法律顾问 API",
+    title="钉铆 API",
     version="0.1.0",
     description="面向建工行业的 AI 法律助手 - MVP",
     lifespan=lifespan,
@@ -72,7 +72,7 @@ app.include_router(knowledge.router, prefix="/api/v1")
 @app.get("/")
 async def root() -> dict[str, str]:
     return {
-        "name": "建工法律顾问",
+        "name": "钉铆",
         "version": "0.1.0",
         "docs": "/docs",
         "health": "/api/v1/health",

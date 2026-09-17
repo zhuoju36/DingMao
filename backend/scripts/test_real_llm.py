@@ -82,14 +82,14 @@ def _strip_think_tags(content: str) -> str:
 TEST_CASES: list[dict[str, Any]] = [
     {
         "name": "Q1-基础法律问答",
-        "system": "你是建工法律助手。请用中文回答。",
+        "system": "你是钉铆法律助手。请用中文回答。",
         "user": "建设工程合同纠纷中，'背靠背付款'条款的效力如何？",
         "expect_keys": ["背靠背", "效力", "风险", "条件"],
     },
     {
         "name": "Q2-法条引用",
         "system": (
-            "你是建工法律助手。请引用民法典具体条文回答。"
+            "你是钉铆法律助手。请引用民法典具体条文回答。"
             "输出 JSON 格式：{\"article_no\": \"第XXX条\", \"summary\": \"...\"}"
         ),
         "user": "违约金约定过高时可以怎么处理？请引用民法典具体条文。",
@@ -111,7 +111,7 @@ TEST_CASES: list[dict[str, Any]] = [
     {
         "name": "Q3-长合同分析（JSON Schema）",
         "system": (
-            "你是建工法律助手。分析合同条款，输出 JSON："
+            "你是钉铆法律助手。分析合同条款，输出 JSON："
             '{"risks": [{"clause": "条款摘要", "level": "red|yellow|green", "reason": "..."}], '
             '"summary": "一句话总结"}'
         ),
@@ -128,7 +128,7 @@ TEST_CASES: list[dict[str, Any]] = [
     {
         "name": "Q4-长合同全文（~1500 字）",
         "system": (
-            "你是建工法律助手。阅读合同正文，列出 3 条最重要的风险，"
+            "你是钉铆法律助手。阅读合同正文，列出 3 条最重要的风险，"
             "输出 JSON：{\"top_risks\": [{\"title\": \"...\", \"reason\": \"...\", \"level\": \"...\"}], \"overall\": \"...\"}"
         ),
         "user": """本合同为建设工程施工合同，主要条款如下：

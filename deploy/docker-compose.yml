@@ -1,4 +1,4 @@
-# 建工法律顾问 - 一键部署
+# 钉铆 - 一键部署
 # 用法:
 #   开发环境: docker compose -f deploy/docker-compose.dev.yml up -d
 #   生产环境: docker compose -f deploy/docker-compose.yml up -d

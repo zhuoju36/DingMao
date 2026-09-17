@@ -199,8 +199,9 @@ onMounted(fetchData)
         <span class="section-title">⚙️ 关于</span>
       </template>
       <p class="about-text">
-        建工法律顾问 · MVP 阶段，覆盖<strong>合同审查</strong>与<strong>变更扯皮</strong>两个场景。
+        <strong>钉铆</strong> · MVP 阶段，覆盖<strong>合同审查</strong>与<strong>变更扯皮</strong>两个场景。
       </p>
+      <p class="about-text muted">钉是钉，铆是铆 —— 讲法律，讲合规，不打马虎眼。</p>
       <p class="about-text muted">
         ⚠️ 所有 AI 输出仅供参考，不构成法律意见。重大决策请咨询执业律师。
       </p>

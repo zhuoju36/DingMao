@@ -20,7 +20,7 @@
 
 ```bash
 # 1. 克隆代码（首次）
-git clone <repo> && cd lawyer
+git clone https://github.com/zhuoju36/DingMao.git && cd DingMao
 
 # 2. 复制环境变量模板
 cp backend/.env.example backend/.env
