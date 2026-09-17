@@ -1,11 +1,8 @@
 // 路由配置
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router"
+import AppLayout from "@/components/AppLayout.vue"
 
 const routes: RouteRecordRaw[] = [
-  {
-    path: "/",
-    redirect: "/dashboard",
-  },
   {
     path: "/login",
     name: "Login",
@@ -13,28 +10,38 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: false },
   },
   {
-    path: "/dashboard",
-    name: "Dashboard",
-    component: () => import("@/views/Dashboard.vue"),
+    // 所有需登录页面都嵌在 AppLayout 下（统一导航栏）
+    path: "/",
+    component: AppLayout,
     meta: { requiresAuth: true },
+    children: [
+      { path: "", redirect: "/dashboard" },
+      {
+        path: "dashboard",
+        name: "Dashboard",
+        component: () => import("@/views/Dashboard.vue"),
+      },
+      {
+        path: "projects",
+        name: "Projects",
+        component: () => import("@/views/Projects.vue"),
+      },
+      {
+        path: "projects/:id",
+        name: "ProjectDetail",
+        component: () => import("@/views/ProjectDetail.vue"),
+      },
+      {
+        path: "consultation/:id",
+        name: "Consultation",
+        component: () => import("@/views/Consultation.vue"),
+      },
+    ],
   },
   {
-    path: "/projects",
-    name: "Projects",
-    component: () => import("@/views/Projects.vue"),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: "/projects/:id",
-    name: "ProjectDetail",
-    component: () => import("@/views/ProjectDetail.vue"),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: "/consultation/:id",
-    name: "Consultation",
-    component: () => import("@/views/Consultation.vue"),
-    meta: { requiresAuth: true },
+    // 兜底：未匹配路由回工作台
+    path: "/:pathMatch(.*)*",
+    redirect: "/dashboard",
   },
 ]
 

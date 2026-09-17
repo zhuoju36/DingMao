@@ -122,6 +122,8 @@ class ConsultationListItem(BaseModel):
     """项目下问诊列表项（不含 messages/conclusions 明细，用于列表展示）。"""
 
     id: int
+    project_id: int
+    project_name: str | None = None
     scenario: str
     status: str
     summary: str | None = None  # dispute_summary_ai
@@ -135,6 +137,6 @@ class ConsultationListItem(BaseModel):
 
 
 class ConsultationListResponse(BaseModel):
-    project_id: int
+    project_id: int | None = None
     items: list[ConsultationListItem]
     total: int

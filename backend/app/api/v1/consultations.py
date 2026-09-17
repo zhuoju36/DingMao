@@ -25,6 +25,7 @@ from app.schemas.consultation import (
     ChatTurnResponse,
     ConclusionResponse,
     ConsultationCreate,
+    ConsultationListResponse,
     ConsultationMessageCreate,
     ConsultationMessageResponse,
     ConsultationResponse,
@@ -56,6 +57,44 @@ async def _get_consultation(
     if consultation.user_id != user.id:
         raise PermissionDeniedError("无权访问该问诊")
     return consultation
+
+
+@router.get("", response_model=ConsultationListResponse)
+async def list_my_consultations(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    scenario: str | None = None,
+    status_filter: str | None = None,
+    limit: int = 20,
+) -> ConsultationListResponse:
+    """我的问诊列表（跨项目，按更新时间倒序）。
+
+    用于 Dashboard「最近问诊」与未来的「场景中心」页。
+    """
+    stmt = (
+        select(Consultation)
+        .where(Consultation.user_id == user.id)
+        .options(
+            selectinload(Consultation.conclusions),
+            selectinload(Consultation.facts),
+            selectinload(Consultation.project),
+        )
+        .order_by(Consultation.updated_at.desc())
+        .limit(limit)
+    )
+    if scenario:
+        stmt = stmt.where(Consultation.scenario == scenario)
+    if status_filter:
+        stmt = stmt.where(Consultation.status == status_filter)
+
+    rows = (await db.execute(stmt)).scalars().all()
+    items = [
+        consultation_engine.to_list_item(
+            c, c.project.name if c.project else None
+        )
+        for c in rows
+    ]
+    return ConsultationListResponse(items=items, total=len(items))
 
 
 @router.post("", response_model=ConsultationResponse, status_code=status.HTTP_201_CREATED)

@@ -26,6 +26,7 @@ from app.models.consultation import (
     ConsultationStatus,
 )
 from app.models.user import User, UserRole
+from app.schemas.consultation import ConsultationListItem
 from app.services.llm import LLMMessage, LLMTaskType, get_llm_client
 from app.services.llm_mock import generate_contract_review_report
 
@@ -130,6 +131,33 @@ async def create_consultation(
     db.add(consultation)
     await db.flush()
     return consultation
+
+
+def to_list_item(
+    c: Consultation, project_name: str | None = None
+) -> ConsultationListItem:
+    """Consultation ORM -> 列表项（含红黄绿计数）。
+
+    调用前请确保 conclusions / facts 已 eager load，否则会触发懒加载。
+    """
+    red = sum(1 for x in c.conclusions if x.level == "red")
+    yellow = sum(1 for x in c.conclusions if x.level == "yellow")
+    green = sum(1 for x in c.conclusions if x.level == "green")
+    return ConsultationListItem(
+        id=c.id,
+        project_id=c.project_id,
+        project_name=project_name,
+        scenario=c.scenario,
+        status=c.status,
+        summary=c.dispute_summary_ai,
+        fact_count=len(c.facts),
+        conclusion_count=len(c.conclusions),
+        red_count=red,
+        yellow_count=yellow,
+        green_count=green,
+        created_at=c.created_at,
+        updated_at=c.updated_at,
+    )
 
 
 # ===== 多轮对话 =====

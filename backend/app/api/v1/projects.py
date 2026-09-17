@@ -11,12 +11,13 @@ from app.models.base import get_db
 from app.models.consultation import Consultation
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.consultation import ConsultationListItem, ConsultationListResponse
+from app.schemas.consultation import ConsultationListResponse
 from app.schemas.project import (
     ProjectCreate,
     ProjectListResponse,
     ProjectResponse,
 )
+from app.services import consultation_engine
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -109,7 +110,7 @@ async def list_project_consultations(
 
     用于项目详情页的「历史问诊」列表。
     """
-    await _get_owned_project(db, project_id, user)
+    project = await _get_owned_project(db, project_id, user)
 
     stmt = (
         select(Consultation)
@@ -126,26 +127,7 @@ async def list_project_consultations(
 
     rows = (await db.execute(stmt)).scalars().all()
 
-    items: list[ConsultationListItem] = []
-    for c in rows:
-        red = sum(1 for x in c.conclusions if x.level == "red")
-        yellow = sum(1 for x in c.conclusions if x.level == "yellow")
-        green = sum(1 for x in c.conclusions if x.level == "green")
-        items.append(
-            ConsultationListItem(
-                id=c.id,
-                scenario=c.scenario,
-                status=c.status,
-                summary=c.dispute_summary_ai,
-                fact_count=len(c.facts),
-                conclusion_count=len(c.conclusions),
-                red_count=red,
-                yellow_count=yellow,
-                green_count=green,
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-            )
-        )
+    items = [consultation_engine.to_list_item(c, project.name) for c in rows]
 
     return ConsultationListResponse(
         project_id=project_id, items=items, total=len(items)

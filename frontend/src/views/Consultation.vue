@@ -440,7 +440,8 @@ function backToProject() {
 .consultation {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 60px);
+  /* 父容器 .app-main 已限定高度并提供滚动，这里用 100% 避免嵌套滚动条 */
+  height: 100%;
   padding: 24px;
   background: #f5f7fa;
 }

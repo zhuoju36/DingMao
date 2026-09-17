@@ -166,6 +166,8 @@ export async function listMessages(
 
 export interface ConsultationListItem {
   id: number
+  project_id: number
+  project_name: string | null
   scenario: string
   status: string
   summary: string | null
@@ -185,6 +187,24 @@ export async function listProjectConsultations(
   const query = scenario ? `?scenario=${scenario}` : ""
   const r = await apiClient.get<{ items: ConsultationListItem[]; total: number }>(
     `/projects/${projectId}/consultations${query}`
+  )
+  return (r as unknown as { items: ConsultationListItem[] }).items
+}
+
+// === 我的问诊（跨项目）===
+
+export async function listMyConsultations(params?: {
+  scenario?: ConsultationScenario
+  status?: ConsultationStatus
+  limit?: number
+}): Promise<ConsultationListItem[]> {
+  const q = new URLSearchParams()
+  if (params?.scenario) q.set("scenario", params.scenario)
+  if (params?.status) q.set("status_filter", params.status)
+  if (params?.limit) q.set("limit", String(params.limit))
+  const query = q.toString() ? `?${q}` : ""
+  const r = await apiClient.get<{ items: ConsultationListItem[]; total: number }>(
+    `/consultations${query}`
   )
   return (r as unknown as { items: ConsultationListItem[] }).items
 }

@@ -1,152 +1,352 @@
 <script setup lang="ts">
-// 工作台 - MVP 占位，后续接入项目列表/最近问诊等
-import { ref, onMounted } from "vue"
+// 工作台 - 快速回到上次的工作
+import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
-import { useUserStore } from "@/stores/user"
-import { healthApi } from "@/api/health"
 import { ElMessage } from "element-plus"
+import apiClient from "@/api"
+import { listMyConsultations, type ConsultationListItem } from "@/api/consultation"
+import { useUserStore } from "@/stores/user"
+
+interface Project {
+  id: number
+  name: string
+  code: string | null
+  location: string | null
+  contract_amount: string | null
+  contractor_org: string | null
+  updated_at?: string
+}
 
 const router = useRouter()
 const userStore = useUserStore()
 
-const llmStatus = ref<{ available: boolean; default: string; providers: Record<string, boolean> } | null>(null)
+const loading = ref(false)
+const projects = ref<Project[]>([])
+const consultations = ref<ConsultationListItem[]>([])
 
-onMounted(async () => {
-  try {
-    llmStatus.value = await healthApi.checkLLM()
-  } catch (e) {
-    ElMessage.warning("无法连接后端 API，请确认后端已启动")
-  }
+const greeting = computed(() => {
+  const h = new Date().getHours()
+  if (h < 6) return "夜色已深"
+  if (h < 12) return "早上好"
+  if (h < 14) return "中午好"
+  if (h < 18) return "下午好"
+  return "晚上好"
 })
 
-function handleLogout() {
-  userStore.logout()
-  router.push("/login")
+const displayName = computed(
+  () => userStore.userInfo?.fullName || userStore.userInfo?.email?.split("@")[0] || "工程师"
+)
+
+const scenarioLabels: Record<string, string> = {
+  contract_review: "合同审查",
+  variation: "变更扯皮",
 }
+
+const statusMeta: Record<string, { label: string; type: "success" | "warning" | "info" }> = {
+  in_progress: { label: "进行中", type: "warning" },
+  completed: { label: "已完成", type: "success" },
+  abandoned: { label: "已废弃", type: "info" },
+}
+
+const inProgressConsultations = computed(() =>
+  consultations.value.filter((c) => c.status === "in_progress")
+)
+
+async function fetchData() {
+  loading.value = true
+  try {
+    const [projRes, cons] = await Promise.all([
+      apiClient.get<{ items: Project[]; total: number }>("/projects?limit=6"),
+      listMyConsultations({ limit: 8 }),
+    ])
+    projects.value = projRes.items
+    consultations.value = cons
+  } catch (e) {
+    ElMessage.warning("加载工作台数据失败，请确认后端已启动")
+    console.error(e)
+  } finally {
+    loading.value = false
+  }
+}
+
+function openConsultation(id: number) {
+  router.push(`/consultation/${id}`)
+}
+
+function openProject(id: number) {
+  router.push(`/projects/${id}`)
+}
+
+function fmtTime(v: string) {
+  return v ? v.slice(5, 16).replace("T", " ") : "—"
+}
+
+function fmtMoney(v: string | null) {
+  return v ? `¥ ${Number(v).toLocaleString()}` : "—"
+}
+
+onMounted(fetchData)
 </script>
 
 <template>
-  <div class="dashboard">
-    <el-container>
-      <el-header class="header">
-        <div class="header-content">
-          <h3>建工法律顾问</h3>
-          <div class="user-info">
-            <span>{{ userStore.userInfo?.fullName || userStore.userInfo?.email }}</span>
-            <el-tag size="small" class="ml-8">{{ userStore.role }}</el-tag>
-            <el-button text @click="handleLogout" class="ml-8">退出</el-button>
+  <div class="dashboard" v-loading="loading">
+    <!-- 欢迎语 -->
+    <div class="hero">
+      <h2>{{ greeting }}，{{ displayName }} 👋</h2>
+      <p class="hero-sub">
+        <template v-if="inProgressConsultations.length">
+          你有 <strong>{{ inProgressConsultations.length }}</strong> 个进行中的问诊
+        </template>
+        <template v-else-if="consultations.length">
+          最近有 {{ consultations.length }} 条问诊记录
+        </template>
+        <template v-else> 还没有问诊记录，从新建项目开始 </template>
+      </p>
+    </div>
+
+    <!-- 待继续的问诊 -->
+    <el-card v-if="inProgressConsultations.length" class="section" shadow="never">
+      <template #header>
+        <span class="section-title">⏳ 待继续</span>
+      </template>
+      <div
+        v-for="c in inProgressConsultations"
+        :key="c.id"
+        class="row-item"
+        @click="openConsultation(c.id)"
+      >
+        <el-tag size="small" type="warning">进行中</el-tag>
+        <span class="row-main">{{ c.project_name || `项目 #${c.project_id}` }}</span>
+        <span class="row-scene">{{ scenarioLabels[c.scenario] ?? c.scenario }}</span>
+        <span class="row-meta">已采集事实 {{ c.fact_count }}</span>
+        <div class="spacer" />
+        <el-button text type="primary" size="small">继续对话</el-button>
+      </div>
+    </el-card>
+
+    <!-- 我的项目 -->
+    <el-card class="section" shadow="never">
+      <template #header>
+        <div class="card-head">
+          <span class="section-title">📁 我的项目</span>
+          <div class="spacer" />
+          <el-button text type="primary" size="small" @click="router.push('/projects')">
+            查看全部
+          </el-button>
+        </div>
+      </template>
+
+      <el-empty v-if="projects.length === 0" description="还没有项目" :image-size="80">
+        <el-button type="primary" @click="router.push('/projects')">新建项目</el-button>
+      </el-empty>
+
+      <div v-else class="project-grid">
+        <div
+          v-for="p in projects"
+          :key="p.id"
+          class="project-card"
+          @click="openProject(p.id)"
+        >
+          <div class="pc-name">{{ p.name }}</div>
+          <div class="pc-code">{{ p.code || "—" }}</div>
+          <div class="pc-meta">
+            <span>{{ p.location || "—" }}</span>
+            <span class="pc-money">{{ fmtMoney(p.contract_amount) }}</span>
           </div>
         </div>
-      </el-header>
+      </div>
+    </el-card>
 
-      <el-main class="main">
-        <el-row :gutter="16">
-          <el-col :span="8">
-            <el-card shadow="hover">
-              <template #header>
-                <div class="flex-between">
-                  <span>合同审查</span>
-                  <el-tag size="small" type="warning">P0</el-tag>
-                </div>
-              </template>
-              <p>上传合同/招标文件，获取红黄绿分级审查报告</p>
-              <el-button type="primary" plain @click="router.push('/projects')">进入项目</el-button>
-            </el-card>
-          </el-col>
+    <!-- 最近问诊 -->
+    <el-card class="section" shadow="never">
+      <template #header>
+        <span class="section-title">🕘 最近问诊</span>
+      </template>
 
-          <el-col :span="8">
-            <el-card shadow="hover">
-              <template #header>
-                <div class="flex-between">
-                  <span>变更扯皮</span>
-                  <el-tag size="small" type="danger">P0</el-tag>
-                </div>
-              </template>
-              <p>律师问诊式对话，生成签证单/索赔报告/证据目录</p>
-              <el-button type="primary" plain @click="router.push('/projects')">开始问诊</el-button>
-            </el-card>
-          </el-col>
+      <el-empty v-if="consultations.length === 0" description="还没有问诊记录" :image-size="80" />
 
-          <el-col :span="8">
-            <el-card shadow="hover">
-              <template #header>
-                <div class="flex-between">
-                  <span>系统状态</span>
-                </div>
-              </template>
-              <div v-if="llmStatus">
-                <p>
-                  LLM 默认:
-                  <el-tag :type="llmStatus.available ? 'success' : 'danger'" size="small">
-                    {{ llmStatus.default }}
-                  </el-tag>
-                </p>
-                <p>
-                  MiniMax-M3:
-                  <el-tag :type="llmStatus.providers.minimax ? 'success' : 'info'" size="small">
-                    {{ llmStatus.providers.minimax ? "已配置" : "未配置" }}
-                  </el-tag>
-                </p>
-                <p>
-                  DeepSeek-V4-Flash:
-                  <el-tag :type="llmStatus.providers.deepseek ? 'success' : 'info'" size="small">
-                    {{ llmStatus.providers.deepseek ? "已配置" : "未配置" }}
-                  </el-tag>
-                </p>
-              </div>
-              <div v-else>
-                <el-text type="warning">无法连接后端</el-text>
-              </div>
-            </el-card>
-          </el-col>
-        </el-row>
-
-        <el-card class="mt-16" shadow="hover">
-          <template #header>
-            <span>MVP 进度</span>
+      <div v-else>
+        <div
+          v-for="c in consultations"
+          :key="c.id"
+          class="row-item"
+          @click="openConsultation(c.id)"
+        >
+          <span class="row-id">#{{ c.id }}</span>
+          <el-tag size="small" :type="statusMeta[c.status]?.type ?? 'info'">
+            {{ statusMeta[c.status]?.label ?? c.status }}
+          </el-tag>
+          <span class="row-scene">{{ scenarioLabels[c.scenario] ?? c.scenario }}</span>
+          <span class="row-main">{{ c.project_name || `项目 #${c.project_id}` }}</span>
+          <div class="spacer" />
+          <template v-if="c.conclusion_count">
+            <el-tag v-if="c.red_count" type="danger" size="small">🔴 {{ c.red_count }}</el-tag>
+            <el-tag v-if="c.yellow_count" type="warning" size="small" class="ml-4">
+              🟡 {{ c.yellow_count }}
+            </el-tag>
+            <el-tag v-if="c.green_count" type="success" size="small" class="ml-4">
+              🟢 {{ c.green_count }}
+            </el-tag>
           </template>
-          <el-timeline>
-            <el-timeline-item timestamp="W-2 ~ W0" type="primary">准备期：知识库结构化启动</el-timeline-item>
-            <el-timeline-item timestamp="W1 ~ W4">MVP Core：合同审查场景</el-timeline-item>
-            <el-timeline-item timestamp="W5 ~ W8">变更扯皮场景</el-timeline-item>
-            <el-timeline-item timestamp="W9 ~ W12">打磨 + Beta 内测</el-timeline-item>
-          </el-timeline>
-        </el-card>
-      </el-main>
-    </el-container>
+          <span class="row-time">{{ fmtTime(c.updated_at) }}</span>
+        </div>
+      </div>
+    </el-card>
+
+    <!-- 系统状态 -->
+    <el-card class="section" shadow="never">
+      <template #header>
+        <span class="section-title">⚙️ 关于</span>
+      </template>
+      <p class="about-text">
+        建工法律顾问 · MVP 阶段，覆盖<strong>合同审查</strong>与<strong>变更扯皮</strong>两个场景。
+      </p>
+      <p class="about-text muted">
+        ⚠️ 所有 AI 输出仅供参考，不构成法律意见。重大决策请咨询执业律师。
+      </p>
+    </el-card>
   </div>
 </template>
 
 <style scoped>
 .dashboard {
-  min-height: 100vh;
+  padding: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.hero {
+  margin-bottom: 20px;
+}
+
+.hero h2 {
+  margin: 0 0 6px 0;
+  font-size: 20px;
+  color: #303133;
+}
+
+.hero-sub {
+  margin: 0;
+  color: #909399;
+  font-size: 14px;
+}
+
+.section {
+  margin-bottom: 16px;
+  border: 1px solid #ebeef5;
+}
+
+.section-title {
+  font-weight: 600;
+  color: #303133;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.ml-4 {
+  margin-left: 4px;
+}
+
+/* 项目卡片网格 */
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.project-card {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.project-card:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.12);
+}
+
+.pc-name {
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-code {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.pc-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #606266;
+}
+
+.pc-money {
+  color: #e6a23c;
+  font-weight: 600;
+}
+
+/* 列表行 */
+.row-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.row-item:hover {
   background: #f5f7fa;
 }
 
-.header {
-  background: #fff;
-  border-bottom: 1px solid #ebeef5;
-  padding: 0;
+.row-id {
+  color: #909399;
+  font-size: 12px;
+  min-width: 36px;
 }
 
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 60px;
-  padding: 0 24px;
+.row-main {
+  color: #303133;
+  font-size: 14px;
+  font-weight: 500;
 }
 
-.user-info {
-  display: flex;
-  align-items: center;
+.row-scene {
+  color: #409eff;
+  font-size: 13px;
 }
 
-.ml-8 {
-  margin-left: 8px;
+.row-meta,
+.row-time {
+  color: #909399;
+  font-size: 12px;
 }
 
-.main {
-  padding: 24px;
+.about-text {
+  margin: 0 0 6px 0;
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.7;
+}
+
+.about-text.muted {
+  color: #909399;
 }
 </style>
