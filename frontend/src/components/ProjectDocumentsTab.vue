@@ -1,30 +1,23 @@
 <script setup lang="ts">
-// 项目档案 Tab（P0-7-C）
-// 依据 docs/product/upload-flow.md §七 UI/UX 设计。
+// 项目档案 Tab（P0-7-C，2026-09-18 布局修订：两栏主从）
+// 依据 docs/product/upload-flow.md §7.0 / §7.3 / §7.4。
 //
-// 职责：
-//   - 拖拽 / 点击上传 → 确认对话框（类型 + 标题）→ 入队解析
-//   - 列表 + 状态徽章 + pending/parsing 时轮询（ia.md 原则 5 状态永远可见）
-//   - 抽屉预览解析出的 Markdown
-//   - 下载原文 / 重新解析 / 删除
+// 布局：
+//   ≥1280px  左侧 400px 紧凑列表 + 右侧预览（正文限宽 760px 居中）
+//   <1280px  同一个列表占满宽度 + 点行开抽屉
 //
 // 设计约束（勿轻易改）：
+//   - 左栏行只显示状态，不放操作按钮（400px 放不下，会挤压长文件名）
+//   - 正文限宽 760px：中文每行 40–45 字才舒适，满宽 1451px 会串行
 //   - 不显示解析进度条：后端不暴露真实百分比，画进度条等于编造
 //   - parsing 行禁用删除/重解析：避免与 worker 抢同一文件（后端无锁）
 //   - 轮询用列表接口：一次请求刷新所有行
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue"
 import { ElMessage, ElMessageBox } from "element-plus"
 import type { UploadFile, UploadInstance } from "element-plus"
-import {
-  Delete,
-  Document,
-  Download,
-  Picture,
-  Refresh,
-  UploadFilled,
-  View,
-} from "@element-plus/icons-vue"
+import { Delete, Document, Download, Picture, Plus, Refresh } from "@element-plus/icons-vue"
 
+import DocumentReader from "@/components/DocumentReader.vue"
 import {
   DOCUMENT_TYPE_LABELS,
   deleteDocument,
@@ -38,12 +31,24 @@ import {
   type DocumentType,
   type ParseStatus,
 } from "@/api/documents"
-import { renderMarkdown } from "@/utils/markdown"
+import { formatBytes, formatChars, formatDuration } from "@/utils/format"
 
 const props = defineProps<{ projectId: number }>()
 
 // 把档案数抛给父组件（Tab 徽章用），避免父组件为此再发一次列表请求
 const emit = defineEmits<{ (e: "count-change", count: number): void }>()
+
+// ===== 响应式断点 =====
+
+/** 宽屏（≥1280px）用两栏；窄屏回退成单栏列表 + 抽屉 */
+const isWide = ref(true)
+let mql: MediaQueryList | null = null
+
+function onBreakpointChange(e: MediaQueryListEvent) {
+  isWide.value = e.matches
+  // 切到宽屏后右侧已有预览，抽屉就该收起来
+  if (isWide.value) drawerVisible.value = false
+}
 
 // ===== 列表 + 轮询 =====
 
@@ -75,12 +80,62 @@ const hasActive = computed(() =>
   )
 )
 
+// ===== 选中态 =====
+
+const selectedId = ref<number | null>(null)
+const selected = computed(
+  () => items.value.find((d) => d.id === selectedId.value) ?? null
+)
+const detail = ref<DocumentResponse | null>(null)
+const detailLoading = ref(false)
+
+async function loadDetailIfParsed(d: DocumentListItem) {
+  if (d.parse_status !== "parsed") {
+    detail.value = null
+    return
+  }
+  if (detail.value?.id === d.id) return // 已有同一份，不重复请求
+  detailLoading.value = true
+  try {
+    detail.value = await getDocument(props.projectId, d.id)
+  } catch {
+    detail.value = null
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+async function selectDoc(d: DocumentListItem) {
+  selectedId.value = d.id
+  if (!isWide.value) drawerVisible.value = true
+  await loadDetailIfParsed(d)
+}
+
 async function load() {
   loading.value = true
   try {
     items.value = await listDocuments(props.projectId)
     nowMs.value = Date.now()
     emit("count-change", items.value.length)
+
+    // 同步选中项：轮询后若不更新，右侧状态会停在旧值
+    if (selectedId.value !== null) {
+      const fresh = items.value.find((d) => d.id === selectedId.value)
+      if (!fresh) {
+        // 已被删除
+        selectedId.value = null
+        detail.value = null
+      } else if (
+        fresh.parse_status === "parsed" &&
+        detail.value?.id !== fresh.id
+      ) {
+        // 刚解析完成 → 补拉详情
+        await loadDetailIfParsed(fresh)
+      }
+    } else if (items.value.length) {
+      // 默认选中第一个，避免右侧一大块空白
+      await selectDoc(items.value[0])
+    }
   } catch {
     // 错误提示由 Axios 拦截器统一处理
   } finally {
@@ -99,75 +154,84 @@ function syncPolling() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  mql = window.matchMedia("(min-width: 1280px)")
+  isWide.value = mql.matches
+  mql.addEventListener("change", onBreakpointChange)
+  load()
+})
+
 onUnmounted(() => {
   // 必须清理，否则离开页面后仍在请求
   if (pollTimer !== null) clearInterval(pollTimer)
   pollTimer = null
+  mql?.removeEventListener("change", onBreakpointChange)
 })
 
-// ===== 展示格式化 =====
+// ===== 行内展示 =====
 
-function fmtTime(v: string) {
-  // 后端返回 UTC ISO（带 Z）。转本地时间展示。
-  const d = new Date(v)
-  if (Number.isNaN(d.getTime())) return "—"
-  const p = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+function isImage(d: DocumentListItem) {
+  return d.mime_type.startsWith("image/")
 }
 
-function fmtSize(bytes: number) {
-  if (!bytes) return "—"
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-function fmtChars(n: number) {
-  if (!n) return "—"
-  return n >= 10000 ? `${(n / 10000).toFixed(1)} 万字` : `${n} 字`
-}
-
-/** parsing 已进行秒数（now - updated_at；worker 置 parsing 时刷过 updated_at） */
+/** parsing 已进行秒数（父组件 tick 驱动） */
 function parsingSeconds(d: DocumentListItem) {
   const started = new Date(d.updated_at).getTime()
   if (Number.isNaN(started)) return 0
   return Math.max(0, Math.floor((nowMs.value - started) / 1000))
 }
 
-function isImage(d: DocumentListItem) {
-  return d.mime_type.startsWith("image/")
+/** 左栏第 2 行：类型 · 大小 · 状态相关摘要 */
+function rowSub(d: DocumentListItem) {
+  const base = `${DOCUMENT_TYPE_LABELS[d.document_type]} · ${formatBytes(d.file_size)}`
+  // 源文件缺失优先提示：这是异常状态，比解析摘要更重要
+  if (!d.file_available) return `${base} · ⚠️ 源文件已丢失`
+  if (d.parse_status === "parsing") return `${base} · 已进行 ${parsingSeconds(d)} 秒`
+  if (d.parse_status === "pending") return `${base} · 排队中`
+  if (d.parse_status === "parsed") {
+    const bits = [`${d.page_count} 页`, formatChars(d.markdown_chars)]
+    if (d.parse_elapsed_sec) bits.push(`${d.parse_elapsed_sec}s`)
+    return `${base} · ${bits.join(" · ")}`
+  }
+  if (d.parse_status === "failed_parse") return `${base} · 解析失败，详见右侧`
+  return base
 }
-
-const MAX_FILE_SIZE = 50 * 1024 * 1024
 
 // ===== 上传 =====
 
-const uploadRef = ref<UploadInstance>()
+const MAX_FILE_SIZE = 50 * 1024 * 1024
 const dialogVisible = ref(false)
 const pickedFile = ref<File | null>(null)
 const fileError = ref("")
 const uploading = ref(false)
+
+/** el-upload 实例（仅用于清空其内部文件列表） */
+const uploadRef = ref<UploadInstance>()
+
 const form = reactive<{ document_type: DocumentType; title: string }>({
   document_type: "contract",
   title: "",
 })
 
-/** el-upload 的 on-change：拿到 File → 清空内部列表 → 开确认对话框 */
+/** 统一的落点：文件选择器与拖拽都进这里，再开确认对话框 */
+function handleFile(raw: File) {
+  pickedFile.value = raw
+  fileError.value =
+    raw.size > MAX_FILE_SIZE
+      ? `文件 ${formatBytes(raw.size)} 超过 50MB 限制，请压缩或拆分后再上传`
+      : ""
+  form.document_type = "contract"
+  // 默认标题 = 文件名去扩展名（可改）
+  form.title = raw.name.replace(/\.[^.]+$/, "").slice(0, 300) || raw.name
+  dialogVisible.value = true
+}
+
+/** el-upload 的 on-change：取 File → 清空内部列表 → 走统一落点 */
 function onFilePicked(file: UploadFile) {
   const raw = file.raw
   // 立即清空 el-upload 内部列表，使每次选择都是独立的一次（无需 limit 管理）
   uploadRef.value?.clearFiles()
-  if (!raw) return
-
-  pickedFile.value = raw
-  fileError.value =
-    raw.size > MAX_FILE_SIZE
-      ? `文件 ${fmtSize(raw.size)} 超过 50MB 限制，请压缩或拆分后再上传`
-      : ""
-  form.document_type = "contract"
-  form.title = raw.name.replace(/\.[^.]+$/, "").slice(0, 300) || raw.name
-  dialogVisible.value = true
+  if (raw) handleFile(raw)
 }
 
 function closeDialog() {
@@ -183,7 +247,6 @@ async function submitUpload() {
     fileError.value = "请填写文档标题"
     return
   }
-
   uploading.value = true
   try {
     await uploadDocument(props.projectId, f, form.document_type, form.title.trim())
@@ -197,37 +260,47 @@ async function submitUpload() {
   }
 }
 
-// ===== 详情抽屉 =====
+// ===== 拖拽到左栏（整块可拖）=====
 
-const drawerVisible = ref(false)
-const detail = ref<DocumentResponse | null>(null)
-const detailLoading = ref(false)
+const dragActive = ref(false)
+let dragDepth = 0
 
-const markdownHtml = computed(() =>
-  renderMarkdown(detail.value?.parsed_content?.markdown)
-)
-
-async function openDetail(d: DocumentListItem) {
-  drawerVisible.value = true
-  detailLoading.value = true
-  detail.value = null
-  try {
-    detail.value = await getDocument(props.projectId, d.id)
-  } catch {
-    drawerVisible.value = false
-  } finally {
-    detailLoading.value = false
+function onDragEnter() {
+  dragDepth += 1
+  dragActive.value = true
+}
+function onDragLeave() {
+  dragDepth -= 1
+  if (dragDepth <= 0) {
+    dragDepth = 0
+    dragActive.value = false
   }
 }
+function onDrop(e: DragEvent) {
+  dragDepth = 0
+  dragActive.value = false
+  const f = e.dataTransfer?.files?.[0]
+  if (f) handleFile(f)
+}
 
-// ===== 行内操作 =====
+// ===== 详情抽屉（仅窄屏用）=====
 
-/** 每行可用操作由状态决定（见 upload-flow.md §7.3） */
+const drawerVisible = ref(false)
+
+// ===== 操作 =====
+
 function canReparse(d: DocumentListItem) {
-  return d.parse_status === "parsed" || d.parse_status === "failed_parse"
+  // 源文件没了就无法重解析（后端会 422，不如直接禁用）
+  return (
+    d.file_available &&
+    (d.parse_status === "parsed" || d.parse_status === "failed_parse")
+  )
 }
 function canDelete(d: DocumentListItem) {
   return d.parse_status !== "parsing"
+}
+function canDownload(d: DocumentListItem) {
+  return d.file_available
 }
 
 async function onDownload(d: DocumentListItem) {
@@ -252,6 +325,7 @@ async function onReparse(d: DocumentListItem) {
     const r = await reparseDocument(props.projectId, d.id)
     if (r.queued) ElMessage.success("已重新入队解析")
     else ElMessage.warning(r.message)
+    detail.value = null
     await load()
   } catch {
     // 拦截器已提示
@@ -271,6 +345,11 @@ async function onDelete(d: DocumentListItem) {
   try {
     await deleteDocument(props.projectId, d.id)
     ElMessage.success("已删除")
+    if (selectedId.value === d.id) {
+      selectedId.value = null
+      detail.value = null
+      drawerVisible.value = false
+    }
     await load()
   } catch {
     // 拦截器已提示
@@ -280,101 +359,94 @@ async function onDelete(d: DocumentListItem) {
 
 <template>
   <div class="doc-tab">
-    <!-- 上传区：拖拽与点击同一路径（都开确认对话框） -->
-    <el-upload
-      ref="uploadRef"
-      class="uploader"
-      drag
-      action="#"
-      :auto-upload="false"
-      :show-file-list="false"
-      :on-change="onFilePicked"
-    >
-      <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-      <div class="el-upload__text">
-        拖拽文件到这里，或 <em>点击选择</em>
-      </div>
-      <template #tip>
-        <div class="el-upload__tip">支持 PDF / 图片等，单个 ≤ 50MB</div>
-      </template>
-    </el-upload>
-
-    <!-- 列表 -->
-    <div v-loading="loading" class="list-wrap">
-      <el-empty
-        v-if="!items.length && !loading"
-        description="还没有归档文件"
+    <!-- ============ 宽屏：两栏主从 ============ -->
+    <div v-if="isWide" class="split">
+      <!-- 左栏：固定 400px 紧凑列表；整块可接收拖拽 -->
+      <aside
+        class="pane-left"
+        :class="{ 'drag-active': dragActive }"
+        @dragenter.prevent="onDragEnter"
+        @dragover.prevent
+        @dragleave.prevent="onDragLeave"
+        @drop.prevent="onDrop"
       >
-        <div class="empty-hint">
-          上传合同、签证单、监理通知单等，解析后可辅助问诊分析
+        <div class="left-head">
+          <el-upload
+            ref="uploadRef"
+            action="#"
+            :auto-upload="false"
+            :show-file-list="false"
+            :on-change="onFilePicked"
+          >
+            <el-button type="primary" size="small" :icon="Plus">上传文件</el-button>
+          </el-upload>
+          <span class="count">{{ items.length }} 个档案</span>
         </div>
-      </el-empty>
+        <div class="drop-tip">将文件拖到此处也可上传</div>
 
-      <template v-else>
-        <div class="list-head">归档文件（{{ items.length }}）</div>
+        <div v-loading="loading" class="list">
+          <el-empty
+            v-if="!items.length && !loading"
+            description="还没有归档文件"
+          >
+            <div class="empty-hint">
+              上传合同、签证单、监理通知单等<br />解析后可辅助问诊分析
+            </div>
+          </el-empty>
 
-        <div v-for="d in items" :key="d.id" class="doc-item">
-          <div class="item-head">
-            <el-icon class="doc-icon">
-              <Picture v-if="isImage(d)" />
-              <Document v-else />
-            </el-icon>
-            <span class="doc-title">{{ d.title }}</span>
-            <el-tag size="small" :type="statusMeta[d.parse_status].type">
-              {{ statusMeta[d.parse_status].icon }}
-              {{ statusMeta[d.parse_status].label }}
+          <div
+            v-for="d in items"
+            :key="d.id"
+            class="row2"
+            :class="{ on: d.id === selectedId }"
+            @click="selectDoc(d)"
+          >
+            <div class="l1">
+              <el-icon class="doc-icon">
+                <Picture v-if="isImage(d)" />
+                <Document v-else />
+              </el-icon>
+              <span class="name">{{ d.title }}</span>
+              <span style="flex: 1" />
+              <span class="badge" :class="`b-${statusMeta[d.parse_status].type}`">
+                {{ statusMeta[d.parse_status].icon }}
+              </span>
+            </div>
+            <div class="l2">{{ rowSub(d) }}</div>
+          </div>
+        </div>
+
+        <!-- 拖拽悬停提示：整个左栏变虚线框 -->
+        <div v-if="dragActive" class="drop-overlay">
+          <div class="drop-overlay-inner">松开即选择文件</div>
+        </div>
+      </aside>
+
+      <!-- 右栏：预览。操作按钮放这里（左栏 400px 放不下） -->
+      <section class="pane-right">
+        <template v-if="selected">
+          <div class="right-head">
+            <span class="right-title">{{ selected.title }}</span>
+            <el-tag size="small" :type="statusMeta[selected.parse_status].type">
+              {{ statusMeta[selected.parse_status].icon }}
+              {{ statusMeta[selected.parse_status].label }}
             </el-tag>
-            <div class="spacer" />
-            <span class="doc-time">{{ fmtTime(d.created_at) }}</span>
-          </div>
-
-          <div class="item-meta">
-            {{ DOCUMENT_TYPE_LABELS[d.document_type] }} ·
-            {{ d.file_name }} · {{ fmtSize(d.file_size) }}
-          </div>
-
-          <!-- 状态副文本（诚实：不编造进度百分比） -->
-          <div v-if="d.parse_status === 'parsing'" class="item-status">
-            已进行 {{ parsingSeconds(d) }} 秒（大文件通常 1–3 分钟）
-          </div>
-          <div v-else-if="d.parse_status === 'pending'" class="item-status">
-            排队中…
-          </div>
-          <div v-else-if="d.parse_status === 'parsed'" class="item-status ok">
-            {{ d.page_count }} 页 · {{ fmtChars(d.markdown_chars) }}
-            <template v-if="d.parse_elapsed_sec">
-              · 耗时 {{ d.parse_elapsed_sec }}s
-            </template>
-          </div>
-          <div v-else-if="d.parse_status === 'failed_parse'" class="item-status err">
-            原因：{{ (d.parse_error || "未知错误").slice(0, 80) }}
-          </div>
-
-          <div class="item-actions">
-            <el-button
-              v-if="d.parse_status === 'parsed'"
-              text
-              type="primary"
-              size="small"
-              :icon="View"
-              @click="openDetail(d)"
-            >
-              查看解析
-            </el-button>
+            <span style="flex: 1" />
             <el-button
               text
               size="small"
               :icon="Download"
-              @click="onDownload(d)"
+              :disabled="!canDownload(selected)"
+              @click="onDownload(selected)"
             >
               下载原文
             </el-button>
             <el-button
-              v-if="canReparse(d)"
+              v-if="canReparse(selected)"
               text
               size="small"
               :icon="Refresh"
-              @click="onReparse(d)"
+              @click="onReparse(selected)"
             >
               重新解析
             </el-button>
@@ -383,17 +455,130 @@ async function onDelete(d: DocumentListItem) {
               type="danger"
               size="small"
               :icon="Delete"
-              :disabled="!canDelete(d)"
-              @click="onDelete(d)"
+              :disabled="!canDelete(selected)"
+              @click="onDelete(selected)"
             >
               删除
             </el-button>
           </div>
-        </div>
-      </template>
+          <div v-if="!selected.file_available" class="missing-file-alert">
+            <el-alert
+              type="warning"
+              :closable="false"
+              show-icon
+              title="源文件已丢失"
+              description="数据库记录仍在（解析结果可读），但存储中找不到原始文件，因此无法下载原文或重新解析。可删除本记录后重新上传。"
+            />
+          </div>
+          <DocumentReader
+            :doc="selected"
+            :detail="detail"
+            :loading="detailLoading"
+            :now-ms="nowMs"
+          />
+        </template>
+
+        <el-empty v-else description="从左侧选择一个档案，查看解析内容" />
+      </section>
     </div>
 
-    <!-- 上传确认对话框 -->
+    <!-- ============ 窄屏：单栏列表 + 抽屉 ============ -->
+    <div v-else class="narrow">
+      <div class="left-head">
+        <el-upload
+          action="#"
+          :auto-upload="false"
+          :show-file-list="false"
+          :on-change="onFilePicked"
+        >
+          <el-button type="primary" size="small" :icon="Plus">上传文件</el-button>
+        </el-upload>
+        <span class="count">{{ items.length }} 个档案</span>
+      </div>
+
+      <div v-loading="loading" class="list">
+        <el-empty v-if="!items.length && !loading" description="还没有归档文件">
+          <div class="empty-hint">
+            上传合同、签证单、监理通知单等<br />解析后可辅助问诊分析
+          </div>
+        </el-empty>
+
+        <div
+          v-for="d in items"
+          :key="d.id"
+          class="row2"
+          :class="{ on: d.id === selectedId }"
+          @click="selectDoc(d)"
+        >
+          <div class="l1">
+            <el-icon class="doc-icon">
+              <Picture v-if="isImage(d)" />
+              <Document v-else />
+            </el-icon>
+            <span class="name">{{ d.title }}</span>
+            <span style="flex: 1" />
+            <span class="badge" :class="`b-${statusMeta[d.parse_status].type}`">
+              {{ statusMeta[d.parse_status].icon }} {{ statusMeta[d.parse_status].label }}
+            </span>
+          </div>
+          <div class="l2">{{ rowSub(d) }}</div>
+        </div>
+      </div>
+
+      <!-- 窄屏用抽屉读正文；操作在抽屉页脚 -->
+      <el-drawer
+        v-model="drawerVisible"
+        :title="selected?.title ?? '解析结果'"
+        size="88%"
+      >
+        <el-alert
+          v-if="selected && !selected.file_available"
+          class="mb-12"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="源文件已丢失"
+          description="数据库记录仍在（解析结果可读），但存储中找不到原始文件，因此无法下载原文或重新解析。"
+        />
+        <DocumentReader
+          :doc="selected"
+          :detail="detail"
+          :loading="detailLoading"
+          :now-ms="nowMs"
+        />
+        <template #footer>
+          <div v-if="selected" class="drawer-actions">
+            <el-button
+              size="small"
+              :icon="Download"
+              :disabled="!canDownload(selected)"
+              @click="onDownload(selected)"
+            >
+              下载原文
+            </el-button>
+            <el-button
+              v-if="canReparse(selected)"
+              size="small"
+              :icon="Refresh"
+              @click="onReparse(selected)"
+            >
+              重新解析
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              :icon="Delete"
+              :disabled="!canDelete(selected)"
+              @click="onDelete(selected)"
+            >
+              删除
+            </el-button>
+          </div>
+        </template>
+      </el-drawer>
+    </div>
+
+    <!-- ============ 上传确认对话框（两种布局共用） ============ -->
     <el-dialog
       v-model="dialogVisible"
       title="上传文件"
@@ -405,7 +590,7 @@ async function onDelete(d: DocumentListItem) {
         <el-form-item label="已选文件">
           <span class="picked-name">
             {{ pickedFile?.name }}
-            <span class="muted">（{{ fmtSize(pickedFile?.size ?? 0) }}）</span>
+            <span class="muted">（{{ formatBytes(pickedFile?.size ?? 0) }}）</span>
           </span>
         </el-form-item>
         <el-form-item label="文件类型" required>
@@ -447,53 +632,6 @@ async function onDelete(d: DocumentListItem) {
         </el-button>
       </template>
     </el-dialog>
-
-    <!-- 解析结果抽屉 -->
-    <el-drawer
-      v-model="drawerVisible"
-      :title="detail?.title ?? '解析结果'"
-      size="60%"
-    >
-      <div v-loading="detailLoading" class="drawer-body">
-        <template v-if="detail">
-          <div class="drawer-meta">
-            {{ DOCUMENT_TYPE_LABELS[detail.document_type] }} ·
-            {{ detail.file_name }} · {{ fmtSize(detail.file_size) }} ·
-            {{ fmtTime(detail.created_at) }}
-          </div>
-          <div
-            v-if="detail.parsed_content"
-            class="drawer-meta muted"
-          >
-            解析：{{ detail.parsed_content.tier }} 档 ·
-            {{ detail.parsed_content.page_count }} 页 ·
-            {{ fmtChars(detail.parsed_content.markdown_chars) }} ·
-            耗时 {{ detail.parsed_content.elapsed_sec }}s
-          </div>
-
-          <!-- markdown-it 以 html:false 渲染，原始 HTML 被转义，无 XSS 风险 -->
-          <div class="markdown-body" v-html="markdownHtml" />
-
-          <el-empty
-            v-if="!detail.parsed_content?.markdown"
-            description="暂无解析内容"
-          />
-        </template>
-      </div>
-
-      <template #footer>
-        <el-button
-          v-if="detail"
-          :icon="Download"
-          @click="onDownload(detail as unknown as DocumentListItem)"
-        >
-          下载原文
-        </el-button>
-        <span class="muted footer-note">
-          「在问诊中使用」将在 P0-7-D 提供
-        </span>
-      </template>
-    </el-drawer>
   </div>
 </template>
 
@@ -502,86 +640,187 @@ async function onDelete(d: DocumentListItem) {
   padding-top: 4px;
 }
 
-.uploader {
-  margin-bottom: 4px;
+/* ===== 两栏 ===== */
+.split {
+  display: flex;
+  align-items: stretch;
+  min-height: 560px;
 }
 
-.list-wrap {
-  min-height: 120px;
+.pane-left {
+  position: relative;
+  width: 400px;
+  flex: 0 0 400px;
+  border-right: 1px solid #ebeef5;
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
 }
 
-.list-head {
-  font-size: 14px;
-  font-weight: 600;
-  margin: 16px 0 8px;
+.pane-left.drag-active {
+  outline: 2px dashed #409eff;
+  outline-offset: -6px;
+  border-radius: 4px;
 }
 
-.empty-hint {
-  color: #909399;
-  font-size: 13px;
-  margin-top: 4px;
+.pane-right {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 20px;
 }
 
-.doc-item {
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  transition: box-shadow 0.2s;
-}
-
-.doc-item:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-}
-
-.item-head {
+.left-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-bottom: 8px;
+}
+
+.count {
+  font-size: 12px;
+  color: #909399;
+  margin-left: auto;
+}
+
+.drop-tip {
+  font-size: 12px;
+  color: #c0c4cc;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f2f6fc;
+  margin-bottom: 8px;
+}
+
+.list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  max-height: 640px;
+}
+
+/* ===== 2 行式行（一屏 ~12 个） ===== */
+.row2 {
+  padding: 9px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.row2:hover {
+  background: #f5f7fa;
+}
+
+.row2.on {
+  background: #ecf5ff;
+  border-color: #b3d8ff;
+}
+
+.l1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .doc-icon {
   color: #909399;
+  flex: 0 0 auto;
 }
 
-.doc-title {
+.name {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.spacer {
-  flex: 1;
-}
-
-.doc-time {
+.l2 {
   color: #909399;
   font-size: 12px;
+  margin-top: 3px;
+  padding-left: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.item-meta {
-  color: #909399;
+.badge {
   font-size: 12px;
-  margin-top: 6px;
+  flex: 0 0 auto;
 }
 
-.item-status {
-  font-size: 12px;
-  color: #e6a23c;
-  margin-top: 4px;
-}
-
-.item-status.ok {
+.b-success {
   color: #67c23a;
 }
-
-.item-status.err {
+.b-warning {
+  color: #e6a23c;
+}
+.b-danger {
   color: #f56c6c;
 }
+.b-info {
+  color: #909399;
+}
 
-.item-actions {
-  margin-top: 6px;
+/* 拖拽悬停遮罩 */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(236, 245, 255, 0.92);
   display: flex;
-  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.drop-overlay-inner {
+  color: #409eff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ===== 右侧 ===== */
+.right-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.right-title {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+/* ===== 窄屏 ===== */
+.narrow {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ===== 共用 ===== */
+.empty-hint {
+  color: #909399;
+  font-size: 13px;
+  margin-top: 4px;
+  line-height: 1.7;
+}
+
+.missing-file-alert {
+  margin-bottom: 12px;
+}
+
+.mb-12 {
+  margin-bottom: 12px;
 }
 
 .picked-name {
@@ -590,52 +829,5 @@ async function onDelete(d: DocumentListItem) {
 
 .muted {
   color: #909399;
-}
-
-.footer-note {
-  font-size: 12px;
-  margin-left: 12px;
-}
-
-.drawer-body {
-  min-height: 200px;
-}
-
-.drawer-meta {
-  font-size: 13px;
-  margin-bottom: 6px;
-  word-break: break-all;
-}
-
-.markdown-body {
-  margin-top: 12px;
-  font-size: 14px;
-  line-height: 1.7;
-  word-break: break-word;
-}
-
-/* 解析结果里的表格/代码块可能很宽，统一允许横向滚动 */
-.markdown-body :deep(table) {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 12px 0;
-}
-
-.markdown-body :deep(th),
-.markdown-body :deep(td) {
-  border: 1px solid #dcdfe6;
-  padding: 6px 10px;
-  text-align: left;
-}
-
-.markdown-body :deep(pre) {
-  background: #f5f7fa;
-  padding: 12px;
-  border-radius: 4px;
-  overflow-x: auto;
-}
-
-.markdown-body :deep(img) {
-  max-width: 100%;
 }
 </style>

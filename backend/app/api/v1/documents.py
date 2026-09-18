@@ -176,6 +176,9 @@ def _to_list_item(doc: ProjectDocument) -> DocumentListItem:
         page_count=int(parsed.get("page_count") or 0),
         markdown_chars=int(parsed.get("markdown_chars") or 0),
         parse_elapsed_sec=parsed.get("elapsed_sec"),
+        # 每项一次 stat()。单项目档案数 <50，开销可忽略；
+        # 若将来列表规模变大，改为批量校验或冗余一个 stored_file_exists 列。
+        file_available=storage.file_exists(doc.storage_path),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -190,7 +193,9 @@ async def get_document(
 ) -> DocumentResponse:
     """档案详情（含 parsed_content：Markdown 正文 + 解析元信息）。"""
     doc = await _get_owned_document(db, project_id, document_id, user)
-    return DocumentResponse.model_validate(doc)
+    resp = DocumentResponse.model_validate(doc)
+    resp.file_available = storage.file_exists(doc.storage_path)
+    return resp
 
 
 @router.get("/{document_id}/download")

@@ -51,6 +51,11 @@ class DocumentListItem(BaseModel):
     markdown_chars: int = 0
     parse_elapsed_sec: float | None = None
 
+    # 源文件是否仍在存储中。
+    # 用于把「DB 与存储不一致」这件事暴露到 UI，而不是等用户点「下载原文」才报错。
+    # 触发场景：人工误删、存储迁移、磁盘故障。默认 True 以兼容老数据。
+    file_available: bool = True
+
     created_at: datetime
     updated_at: datetime
 
@@ -81,6 +86,9 @@ class DocumentResponse(BaseModel):
     # 目录见 parsed_content["parsed_dir"]（相对 storage_root）。
     # 理由：middle.json 单文件可达数百 KB，内联进 JSONB 会明显膨胀 DB。
     parsed_content: dict[str, Any] | None = None
+
+    # 同 DocumentListItem.file_available
+    file_available: bool = True
 
     created_at: datetime
     updated_at: datetime

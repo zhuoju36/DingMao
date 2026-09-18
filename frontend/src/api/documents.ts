@@ -48,6 +48,11 @@ export interface DocumentListItem {
   page_count: number
   markdown_chars: number
   parse_elapsed_sec: number | null
+  /**
+   * 源文件是否仍在存储中。
+   * false = DB 有记录但文件没了（误删/迁移/磁盘故障）→ 禁用下载与重新解析。
+   */
+  file_available: boolean
   created_at: string
   updated_at: string
 }
@@ -77,6 +82,8 @@ export interface DocumentResponse {
     tier: string
     parsed_dir: string
   } | null
+  /** 同 DocumentListItem.file_available */
+  file_available: boolean
   created_at: string
   updated_at: string
 }
