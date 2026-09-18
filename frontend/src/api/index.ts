@@ -7,7 +7,19 @@ import { ElMessage } from "element-plus"
 const instance: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || "/api/v1",
   timeout: 60000,
-  headers: { "Content-Type": "application/json" },
+  // ⚠️ 切勿在此处设置默认 Content-Type: application/json
+  //
+  // axios 1.x 的 transformRequest 里有这段逻辑（lib/defaults/index.js:47,57）：
+  //   const hasJSONContentType = contentType.indexOf('application/json') > -1
+  //   if (isFormData(data)) {
+  //     return hasJSONContentType ? JSON.stringify(formDataToJSON(data)) : data
+  //   }
+  // 即：一旦 Content-Type 是 json，**FormData 会被悄悄转成 JSON 字符串**，
+  // 浏览器不再设置 multipart 边界 → 后端 FastAPI 解析不到 file/document_type
+  // 等表单字段 → 返回 422（且错误信息不指向真正原因，极难排查）。
+  //
+  // 不设默认头不会影响 JSON 请求：axios 对普通对象会**自动**设置
+  // application/json（同文件 101-102 行）。故这里显式留空是正确的。
 })
 
 // 请求拦截器

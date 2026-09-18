@@ -13,6 +13,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
+    "verify:upload": "node scripts/verify-upload-formdata.mjs",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --max-warnings 0",
     "format": "prettier --write \"src/**/*.{vue,js,ts,jsx,tsx}\""
   },
