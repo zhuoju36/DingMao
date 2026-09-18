@@ -101,7 +101,7 @@ def build_chat_messages(
 
     # 3. 角色化 system prompt
     system_prompt = (
-        f"你是钉铆法律助手。当前角色：{role_label}。\n"
+        f"你是钉铆争议顾问。当前角色：{role_label}。\n"
         f"当前问诊类型：{scenario_label}。\n\n"
         f"**已收集的事实**（按时间排列）：\n{facts_text}\n\n"
         f"**相关法条知识库**（供参考）：\n{kb_text}\n\n"
@@ -239,7 +239,7 @@ def build_report_messages(
         )
 
     system_prompt = (
-        f"你是钉铆法律助手。角色：{role_label}。问诊类型：{scenario_label}。\n\n"
+        f"你是钉铆争议顾问。角色：{role_label}。问诊类型：{scenario_label}。\n\n"
         f"**已收集事实**：\n{facts_text}\n\n"
         f"**相关法条知识库**：\n{kb_text}\n\n"
         f"基于以上事实 + 知识库 + 与用户的对话历史，生成完整审查/分析报告。{output_schema}"

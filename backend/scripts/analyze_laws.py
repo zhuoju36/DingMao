@@ -1,4 +1,4 @@
-"""深度分析 dengcao 数据集 - 找出所有建工相关条目（不限"法律"）。"""
+"""深度分析 dengcao 数据集 - 找出所有工程相关条目（不限"法律"）。"""
 
 from pathlib import Path
 
@@ -17,7 +17,7 @@ def list_files_with_real_names() -> list[tuple[str, Path]]:
     return items
 
 
-# 扩大的建工关键词
+# 扩大的工程关键词
 CONSTRUCTION_KEYWORDS = {
     # 直接相关
     "建设": "建设",
@@ -35,7 +35,7 @@ CONSTRUCTION_KEYWORDS = {
     "安全": "安全",
     "质量": "质量",
     "消防": "消防",
-    # 环保（建工常涉及）
+    # 环保（工程常涉及）
     "环境": "环境",
     "污染": "污染",
     "噪声": "噪声",
@@ -56,7 +56,7 @@ CONSTRUCTION_KEYWORDS = {
 
 
 def categorize(name: str) -> tuple[str, bool]:
-    """分类 + 是否建工相关。"""
+    """分类 + 是否工程相关。"""
     matched_keywords = [k for k in CONSTRUCTION_KEYWORDS if k in name]
     is_construction = len(matched_keywords) > 0
 
@@ -94,7 +94,7 @@ def main() -> None:
     for cls in sorted(by_class):
         print(f"  {cls:20s} : {len(by_class[cls])} 部")
 
-    print(f"\n🏗 建工相关（扩大关键词）: {len(all_construction)} 部")
+    print(f"\n🏗 工程相关（扩大关键词）: {len(all_construction)} 部")
     print("=" * 80)
     for name, matched in all_construction:
         print(f"  {name:50s} [{'/'.join(matched)}]")
@@ -106,8 +106,8 @@ def main() -> None:
         "招标投标法": "招投标程序",
         "政府采购法": "政府采购",
         "安全生产法": "生产安全责任",
-        "建设工程质量管理条例": "建工质量责任（行政法规）",
-        "建设工程安全生产管理条例": "建工安全责任（行政法规）",
+        "建设工程质量管理条例": "工程质量责任（行政法规）",
+        "建设工程安全生产管理条例": "工程安全责任（行政法规）",
         "建设工程价款结算暂行办法": "结算依据（部门规章）",
         "建设工程施工合同(示范文本) GF-2017-0201": "合同范本",
         "建筑法": "建筑行业基础法",

@@ -1,7 +1,7 @@
 [project]
 name = "dingmao-backend"
 version = "0.1.0"
-description = "钉铆 - 建工法律助手后端"
+description = "钉铆 - 工程争议顾问后端"
 requires-python = ">=3.11"
 dependencies = [
     # ====== Web 框架 ======

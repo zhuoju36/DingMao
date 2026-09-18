@@ -69,7 +69,7 @@ async def test_create_project(client: AsyncClient, token: str) -> int:
             "location": "广州市天河区",
             "contract_amount": "12800000.00",
             "owner_org": "XX 地产公司",
-            "contractor_org": "XX 建工集团",
+            "contractor_org": "XX 工程集团",
             "contract_text": "本合同采用背靠背付款方式，业主付款后再支付施工方。审计机关审计结果作为结算依据。",
         },
     )

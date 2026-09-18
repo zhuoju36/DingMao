@@ -178,7 +178,7 @@ onMounted(fetchProjects)
           <el-input v-model="form.owner_org" placeholder="例如：XX 地产公司" />
         </el-form-item>
         <el-form-item label="施工单位">
-          <el-input v-model="form.contractor_org" placeholder="例如：XX 建工集团" />
+          <el-input v-model="form.contractor_org" placeholder="例如：XX 工程集团" />
         </el-form-item>
       </el-form>
       <template #footer>

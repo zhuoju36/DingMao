@@ -99,7 +99,7 @@ def analyze_one(pdf_path: Path) -> None:
 def main() -> None:
     # 抽 2 本有代表性的
     samples = [
-        "GB55008-2021 混凝土结构通用规范.pdf",  # 关键建工，强条多
+        "GB55008-2021 混凝土结构通用规范.pdf",  # 关键工程，强条多
         "GB55037-2022 建筑防火通用规范.pdf",     # 最大文件
     ]
     for name in samples:

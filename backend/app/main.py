@@ -32,7 +32,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="钉铆 API",
     version="0.1.0",
-    description="面向建工行业的 AI 法律助手 - MVP",
+    description="面向工程行业的 AI 争议顾问 - MVP",
     lifespan=lifespan,
     debug=settings.app_debug,
 )

@@ -1,4 +1,4 @@
-# 建工法律顾问 - 后端 Dockerfile（基于 uv）
+# 工程法律顾问 - 后端 Dockerfile（基于 uv）
 
 FROM python:3.11-slim
 

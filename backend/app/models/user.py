@@ -9,7 +9,7 @@ from app.models.base import Base, TimestampMixin
 
 
 class UserRole(StrEnum):
-    """用户在建工项目中的角色。MVP 单一角色，不可变更。"""
+    """用户在工程项目中的角色。MVP 单一角色，不可变更。"""
 
     OWNER = "owner"              # 业主/建设单位
     DESIGNER = "designer"        # 设计单位
