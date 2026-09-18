@@ -461,21 +461,24 @@ async function onDelete(d: DocumentListItem) {
               删除
             </el-button>
           </div>
-          <div v-if="!selected.file_available" class="missing-file-alert">
+          <!-- 滚动容器：正文在这里滚，不撑高页面 -->
+          <div class="pane-right-body">
             <el-alert
+              v-if="!selected.file_available"
+              class="mb-12"
               type="warning"
               :closable="false"
               show-icon
               title="源文件已丢失"
               description="数据库记录仍在（解析结果可读），但存储中找不到原始文件，因此无法下载原文或重新解析。可删除本记录后重新上传。"
             />
+            <DocumentReader
+              :doc="selected"
+              :detail="detail"
+              :loading="detailLoading"
+              :now-ms="nowMs"
+            />
           </div>
-          <DocumentReader
-            :doc="selected"
-            :detail="detail"
-            :loading="detailLoading"
-            :now-ms="nowMs"
-          />
         </template>
 
         <el-empty v-else description="从左侧选择一个档案，查看解析内容" />
@@ -636,7 +639,16 @@ async function onDelete(d: DocumentListItem) {
 </template>
 
 <style scoped>
+/*
+ * 面板定高：滚动必须发生在面板【内部】，不能撑高整个页面。
+ *
+ * 减去的 240px 是页面 chrome 的实测合计：
+ *   AppLayout header 60 + .project-detail padding 48 + el-page-header ~50
+ *   + el-tabs 头部与间距 ~55 + 余量 ~27
+ * 用 max(420px, …) 给矮视口兜底（避免面板被压成一条缝）。
+ */
 .doc-tab {
+  --pane-h: max(420px, calc(100vh - 240px));
   padding-top: 4px;
 }
 
@@ -644,7 +656,7 @@ async function onDelete(d: DocumentListItem) {
 .split {
   display: flex;
   align-items: stretch;
-  min-height: 560px;
+  height: var(--pane-h);
 }
 
 .pane-left {
@@ -655,6 +667,8 @@ async function onDelete(d: DocumentListItem) {
   padding-right: 12px;
   display: flex;
   flex-direction: column;
+  /* flex 子项要能收缩，否则内部 overflow 不生效（默认 min-height:auto） */
+  min-height: 0;
 }
 
 .pane-left.drag-active {
@@ -667,6 +681,16 @@ async function onDelete(d: DocumentListItem) {
   flex: 1 1 auto;
   min-width: 0;
   padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* 右栏滚动容器：头部（标题+操作）固定，正文在这里滚 */
+.pane-right-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .left-head {
@@ -674,6 +698,7 @@ async function onDelete(d: DocumentListItem) {
   align-items: center;
   gap: 8px;
   padding-bottom: 8px;
+  flex: 0 0 auto;
 }
 
 .count {
@@ -688,12 +713,22 @@ async function onDelete(d: DocumentListItem) {
   padding-bottom: 8px;
   border-bottom: 1px solid #f2f6fc;
   margin-bottom: 8px;
+  flex: 0 0 auto;
 }
 
+/*
+ * 列表滚动区。两栏时填满左栏剩余高度；
+ * 窄屏（.narrow）下不参与 flex，用 max-height 兜底防止同样撑高页面。
+ */
 .list {
-  flex: 1 1 auto;
   overflow-y: auto;
   max-height: 640px;
+}
+
+.split .list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 
 /* ===== 2 行式行（一屏 ~12 个） ===== */

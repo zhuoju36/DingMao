@@ -14,10 +14,17 @@ MinerU 内部用 multiprocessing spawn，子进程需要 __main__ 的文件路�
     <mineru_python> mineru_parse.py --input <pdf> --output <dir> [--tier flash]
 
 输出（写入 output 目录）：
-    document.md       Markdown 正文
-    middle.json       MiddleJson（含 bbox 定位）
-    images/           提取的图片（如有）
-    manifest.json     解析元信息（status/elapsed/page_count/error）
+    document.md               Markdown 正文（图片以**文件路径**引用）
+    middle.json               MiddleJson（含 bbox 定位）
+    images/                   提取的图片（如有）
+    structured_content.json   MinerU 附赠的结构化内容
+    model_output.json         MinerU 原始模型输出
+    manifest.json             解析元信息（含 base64_inlined_images 供排查）
+
+【关键约束：不要用 result.markdown()】
+它会把图片以 base64 data URI 内联进正文。实测 3 页扫描件（5 张图）：
+result.markdown() = 3.78 MB，而 result.save() 的 markdown.md = 1 KB（差 3600 倍）。
+内联版会膨胀 DB 并让前端渲染卡死。本脚本统一用 save() 的产物。
 
 退出码：
     0  成功
@@ -83,26 +90,42 @@ def main() -> int:
     try:
         # 延迟 import：让 --help / 参数错误不必加载 7GB 依赖
         from mineru.parser import parse
+        from mineru.parser.writer import FileBasedDataWriter
 
         result = parse(str(src), tier=args.tier)
 
-        md_text = result.markdown()
-        middle_json_text = result.to_json()
+        # ⚠️ 关键：必须用 result.save() 写出的 markdown.md，**不要**用 result.markdown()
+        #
+        # result.markdown() 会把图片以 **base64 data URI 内联**进正文。实测一份
+        # 3 页扫描件（5 张图）：result.markdown() = 3,779,473 字节，
+        # 而 save() 的 markdown.md = 1,036 字节（图片用文件路径引用）—— 差 3600 倍。
+        # 内联版会同时造成两个问题：
+        #   1) parsed_content 塞进 3.7MB base64 → 严重膨胀 DB（违反 §6.3 的既定原则）
+        #   2) 前端渲染百万字符 → 页面被撑到极高、浏览器卡顿
+        # 因此本项目统一采用「图片走文件路径、只把文本内联进 DB」的形态。
+        result.save(FileBasedDataWriter(str(out_dir)))
 
-        (out_dir / "document.md").write_text(md_text, encoding="utf-8")
-        (out_dir / "middle.json").write_text(middle_json_text, encoding="utf-8")
+        # 统一成本项目约定的文件名（save() 默认写 markdown.md / middle_json.json）
+        md_path = out_dir / "markdown.md"
+        middle_path = out_dir / "middle_json.json"
+        if not md_path.exists():
+            raise RuntimeError("MinerU 未产出 markdown.md（save() 行为可能已变更）")
+        if not middle_path.exists():
+            raise RuntimeError("MinerU 未产出 middle_json.json（save() 行为可能已变更）")
 
-        # 图片素材（有则写 images/，失败不致命）
-        images_written = 0
-        try:
-            from mineru.parser.writer import FileBasedDataWriter
+        md_path.rename(out_dir / "document.md")
+        middle_path.rename(out_dir / "middle.json")
 
-            result.save(FileBasedDataWriter(str(out_dir)))
-            images_dir = out_dir / "images"
-            if images_dir.is_dir():
-                images_written = len(list(images_dir.iterdir()))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[WARN] 图片素材保存失败（不影响正文）: {exc}", file=sys.stderr)
+        md_text = (out_dir / "document.md").read_text(encoding="utf-8")
+        middle_json_text = (out_dir / "middle.json").read_text(encoding="utf-8")
+
+        # 防御：若 MinerU 将来又把 base64 内联回来，manifest 里留痕便于排查
+        base64_inlined = md_text.count("data:image/")
+
+        images_dir = out_dir / "images"
+        images_written = (
+            len([p for p in images_dir.iterdir() if p.is_file()]) if images_dir.is_dir() else 0
+        )
 
         elapsed = time.perf_counter() - started
         page_count = _count_pages(middle_json_text)
@@ -117,8 +140,16 @@ def main() -> int:
                 "middle_json_bytes": len(middle_json_text.encode("utf-8")),
                 "page_count": page_count,
                 "images": images_written,
+                # 0 = 正常（图片走路径引用）；>0 = 正文里混入了 base64，需排查
+                "base64_inlined_images": base64_inlined,
             },
         )
+        if base64_inlined:
+            print(
+                f"[WARN] 正文含 {base64_inlined} 处 base64 内联图片，"
+                f"markdown 达 {len(md_text)} 字符，可能膨胀 DB",
+                file=sys.stderr,
+            )
         print(
             f"[OK] {src.name}: {elapsed:.1f}s, "
             f"pages={page_count}, md={len(md_text)} chars, images={images_written}"

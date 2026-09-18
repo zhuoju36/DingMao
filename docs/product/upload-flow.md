@@ -156,6 +156,39 @@ title:          string  （可选，默认取原文件名）
 structured_content.json / model_output.json）留在 `storage/parsed/{pid}/{did}/`，
 需要按页定位时再读盘。符合"原则 7 知识库与代码解耦（可重建）"。
 
+#### 6.3.1 ⚠️ 必须用 `result.save()` 的 markdown，不能用 `result.markdown()`
+
+**2026-09-18 实测踩坑（已修）**：MinerU 的 `result.markdown()` 会把图片以
+**base64 data URI 内联**进正文，而 `result.save()` 写出的 `markdown.md` 用**文件路径**引用。
+
+同一份 3 页扫描件（5 张图）的实测对比：
+
+| 来源 | 大小 | 图片形式 |
+|---|---|---|
+| `result.markdown()` | **3,779,473 B** | `![](data:image/jpeg;base64,…)` |
+| `result.save()` → `markdown.md` | **1,036 B** | `![](images/page_0_image_body_1.jpg)` |
+
+**差 3600 倍**。用错会导致两个后果（都实际发生过）：
+
+1. **DB 膨胀** —— `parsed_content` 塞进 3.7 MB base64，直接违反 §6.3 的既定原则
+2. **前端不可用** —— 百万字符渲染把页面撑到极高、浏览器卡顿（用户实际反馈"窗口被撑得很高"）
+
+因此 `scripts/mineru_parse.py` 统一用 `save()` 产物，并把 `markdown.md` / `middle_json.json`
+重命名为约定的 `document.md` / `middle.json`；同时在 manifest 里记录
+`base64_inlined_images`（正常为 0），一旦 MinerU 行为变更能被立刻发现。
+
+历史污染数据用 `scripts/repair_base64_docs.py` 重解析修复（实测 3,779,019 → 582 字符）。
+
+#### 6.3.2 解析产物中的图片暂不在预览里显示
+
+正文里的图片引用是**服务器磁盘相对路径**（`images/xxx.jpg`），浏览器按页面路由解析必然
+404，直接渲染会出现一排碎图图标。`utils/markdown.ts` 因此把相对路径图片渲染成
+**可读占位标记**（含文件名，便于排查）。
+
+图片本体确实已随解析产物落盘（`storage/parsed/{pid}/{did}/images/`）。要真正显示需：
+新增 artifacts 端点 + 前端以 blob 方式带鉴权加载（`<img src>` 无法携带 Authorization 头）。
+**待做（P0-7-E）**，方案未定，不在 P0-7-C 范围。
+
 ### 6.4 MinerU 调用方式（关键架构约束）
 
 MinerU 依赖 **7.3 GB**（torch/onnxruntime + 模型），不装进 backend venv（737 MB）。
