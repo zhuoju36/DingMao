@@ -2,6 +2,7 @@
 import apiClient from "./index"
 import type {
   ChatTurnResponse,
+  ConfirmReportResponse,
   Consultation,
   ConsultationListItem,
   ConsultationListResponse,
@@ -13,6 +14,7 @@ import type {
 
 export type {
   ChatTurnResponse,
+  ConfirmReportResponse,
   Consultation,
   ConsultationConclusion,
   ConsultationFact,
@@ -21,7 +23,11 @@ export type {
   ConsultationMessage,
   ConsultationScenario,
   ConsultationStatus,
+  EvidenceWarning,
+  FactProgress,
+  FactSpec,
   LawRef,
+  PendingFact,
   RiskLevel,
   StandardRef,
   StreamEvent,
@@ -41,6 +47,19 @@ export async function createConsultation(
 
 export async function getConsultation(id: number): Promise<Consultation> {
   return apiClient.get<Consultation>(`/consultations/${id}`)
+}
+
+/**
+ * 用户确认生成报告（状态机迁移 #6：awaiting_confirm → generating_report）。
+ *
+ * 只做状态迁移与校验，实际的 LLM 流式生成仍走 generateReportStream。
+ * 必填未齐时后端不阻断（consultation-ui.md §5.1），但在响应里返回
+ * missing_required，由前端提示。
+ */
+export async function confirmReport(
+  id: number
+): Promise<ConfirmReportResponse> {
+  return apiClient.post<ConfirmReportResponse>(`/consultations/${id}/confirm`)
 }
 
 // === 流式端点 ===

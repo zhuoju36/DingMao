@@ -1,26 +1,34 @@
 <script setup lang="ts">
-// 律师问诊：多轮对话 + 报告卡片（持久化展示）
+// 律师问诊 —— consultation-ui.md 定稿布局
 //
-// 报告来源：consultation.conclusions（后端已落库）
-// —— 关掉页面/刷新/重新进入都能看到，不再依赖弹窗状态
-import { computed, nextTick, onMounted, ref } from "vue"
+// 核心判断（§二）：**问诊不是聊天**。产品定义是「结构化多轮事实采集，
+// 禁止自由提问」，界面主角应是「待查事项清单」的完成度，对话只是手段。
+//
+// 布局：左栏 380px「采集进度」恒定可见 + 右栏分段控件 [对话][结论][文书]。
+// 左栏恒定是关键——回答追问时也能看见"还差什么"。
+import { computed, nextTick, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { ElMessage, ElMessageBox } from "element-plus"
+import ConsultationFactsPanel from "@/components/ConsultationFactsPanel.vue"
+import ConsultationConclusionCard from "@/components/ConsultationConclusionCard.vue"
 import {
+  confirmReport,
   createConsultation,
   generateReportStream,
   getConsultation,
   listMessages,
   postMessage,
+  type Consultation,
   type ConsultationMessage,
+  type EvidenceWarning,
 } from "@/api/consultation"
 
 const route = useRoute()
 const router = useRouter()
 const consultationId = computed(() => Number(route.params.id))
 
-// 状态
-const consultation = ref<Awaited<ReturnType<typeof getConsultation>> | null>(null)
+// ===== 状态 =====
+const consultation = ref<Consultation | null>(null)
 const messages = ref<ConsultationMessage[]>([])
 const chatInput = ref("")
 const sending = ref(false)
@@ -30,43 +38,74 @@ const loadError = ref("")
 const reportText = ref("")
 const errorMsg = ref("")
 const streaming = ref(false)
-const firstChunkAt = ref<number | null>(null)
-const totalChunks = ref(0)
 const disclaimer = ref("")
+const warnings = ref<EvidenceWarning[]>([])
 const aborted = ref(false)
 let streamController: AbortController | null = null
 
-// 滚动容器
 const messagesScrollRef = ref<HTMLElement | null>(null)
-const reportCardRef = ref<HTMLElement | null>(null)
 
+/** 右栏分段（§3.1 方案 A） */
+type Pane = "chat" | "conclusions" | "artifacts"
+const pane = ref<Pane>("chat")
+
+/** 生成中显示流式预览 */
+const generating = computed(
+  () =>
+    streaming.value ||
+    ["generating_report", "generating_artifacts"].includes(step.value)
+)
+
+// ===== 派生 =====
 const scenarioLabel = computed(() => {
   const s = consultation.value?.scenario
   if (s === "variation") return "变更扯皮"
   if (s === "contract_review") return "合同审查"
   return "问诊"
 })
-
-const scenarioKind = computed<"contract_review" | "variation" | "unknown">(() => {
-  const s = consultation.value?.scenario
-  if (s === "variation" || s === "contract_review") return s
-  return "unknown"
-})
-
+const scenarioKind = computed(() => consultation.value?.scenario ?? "")
+const step = computed(() => consultation.value?.current_step ?? "init")
 const status = computed(() => consultation.value?.status ?? "unknown")
+const facts = computed(() => consultation.value?.facts ?? [])
+const progress = computed(() => consultation.value?.fact_progress ?? null)
+const conclusions = computed(() => consultation.value?.conclusions ?? [])
+const artifacts = computed(
+  () => (consultation.value as { artifacts?: unknown[] } | null)?.artifacts ?? []
+)
+const hasReport = computed(() => conclusions.value.length > 0)
+
 const statusLabel = computed(() => {
   const map: Record<string, string> = {
     in_progress: "进行中",
     completed: "已完成",
     abandoned: "已废弃",
+    failed: "生成失败",
   }
   return map[status.value] ?? status.value
 })
-const factCount = computed(() => consultation.value?.facts.length ?? 0)
-const conclusions = computed(() => consultation.value?.conclusions ?? [])
-const hasReport = computed(() => conclusions.value.length > 0)
+const statusTagType = computed(() => {
+  if (status.value === "completed") return "success"
+  if (status.value === "failed") return "danger"
+  return "warning"
+})
 
-// 报告统计
+/** 5 步步骤条（§5.3，只展示不可点击） */
+const STEPS = [
+  { key: "collecting_facts", label: "采集事实" },
+  { key: "awaiting_confirm", label: "确认" },
+  { key: "generating_report", label: "生成报告" },
+  { key: "generating_artifacts", label: "生成文书" },
+  { key: "done", label: "完成" },
+] as const
+const activeStep = computed(() => {
+  const s = step.value
+  if (s === "init" || s === "await_text") return 0
+  if (s === "failed") return 2 // 停在"生成报告"并标红
+  const i = STEPS.findIndex((x) => x.key === s)
+  return i >= 0 ? i : 0
+})
+const stepFailed = computed(() => step.value === "failed")
+
 const riskStats = computed(() => {
   const s = { red: 0, yellow: 0, green: 0 }
   for (const c of conclusions.value) {
@@ -77,29 +116,43 @@ const riskStats = computed(() => {
   return s
 })
 
-const levelMeta: Record<string, { label: string; type: "danger" | "warning" | "success"; icon: string }> = {
-  red: { label: "红线", type: "danger", icon: "🔴" },
-  yellow: { label: "黄区", type: "warning", icon: "🟡" },
-  green: { label: "可控", type: "success", icon: "🟢" },
-}
-
-// 输入区文案按场景变
-const inputConfig = computed(() => {
-  if (scenarioKind.value === "variation") {
-    return {
-      placeholder: "补充变更事实或回答 AI 的追问（例如：业主临时要求增加的工作内容、签证情况等）",
-      hint: "事实越具体，AI 引导越精准。建议主动回答 AI 提出的关键问题。",
-    }
-  }
-  return {
-    placeholder: "粘贴合同条款或回答 AI 的追问（例如：付款条件、工期、违约责任等）",
-    hint: "AI 会基于你提供的条款逐步识别风险，并主动询问关键问题。",
-  }
+/** 主按钮文案（§5.1 随状态 morph） */
+const primaryAction = computed(() => {
+  if (stepFailed.value) return { label: "重试生成", kind: "retry" as const }
+  if (generating.value) return { label: "停止生成", kind: "stop" as const }
+  if (step.value === "done") return { label: "", kind: "none" as const }
+  if (step.value === "awaiting_confirm")
+    return { label: "确认生成报告", kind: "confirm" as const }
+  return { label: "生成报告", kind: "generate" as const }
 })
 
-const placeholder = computed(() => inputConfig.value.placeholder)
-const hint = computed(() => inputConfig.value.hint)
+const inputPlaceholder = computed(() => {
+  if (status.value === "completed")
+    return "本问诊已生成报告。如需继续追问，请点右上角「新建问诊」"
+  if (scenarioKind.value === "variation")
+    return "补充变更事实，或回答 AI 的追问（Ctrl+Enter 发送）"
+  return "粘贴合同条款，或回答 AI 的追问（Ctrl+Enter 发送）"
+})
+const inputDisabled = computed(
+  () => sending.value || status.value === "completed" || generating.value
+)
 
+const evidenceWarnings = computed(
+  () => consultation.value?.evidence_warnings ?? warnings.value
+)
+/** 全局依据缺失提示（不是单条结论的问题，而是知识库整体没料） */
+const globalBasisGap = computed(() => {
+  const w = evidenceWarnings.value
+  if (!w.length) return ""
+  const noBasis = w.filter((x) => x.type === "no_candidate_basis").length
+  const missingVer = w.filter((x) => x.type.startsWith("missing_")).length
+  if (missingVer)
+    return `知识库中 ${missingVer} 条引用因缺少版本号/生效日期被隐去（应用原则 3：引用过期条文等同误导）`
+  if (noBasis) return `${noBasis} 条结论在知识库中无对应条款，已标注「无明确依据」`
+  return ""
+})
+
+// ===== 数据加载 =====
 async function scrollToBottom() {
   await nextTick()
   if (messagesScrollRef.value) {
@@ -109,21 +162,26 @@ async function scrollToBottom() {
 
 async function loadAll() {
   try {
-    consultation.value = await getConsultation(consultationId.value)
-    messages.value = await listMessages(consultationId.value)
+    const [c, m] = await Promise.all([
+      getConsultation(consultationId.value),
+      listMessages(consultationId.value),
+    ])
+    consultation.value = c
+    messages.value = m
+    // 默认分段跟着状态走（§3.1）
+    pane.value = c.conclusions.length ? "conclusions" : "chat"
     await scrollToBottom()
   } catch (e) {
-    // P0-1 修复：加载失败不再静默，给出可见错误 + 返回入口
     loadError.value = e instanceof Error ? e.message : "加载问诊失败"
   }
 }
 
 onMounted(loadAll)
+watch(consultationId, loadAll)
 
+// ===== 对话 =====
 async function sendMessage() {
-  if (!chatInput.value.trim()) return
-  if (sending.value) return
-
+  if (!chatInput.value.trim() || sending.value) return
   const userContent = chatInput.value
   const tempId = -Date.now()
   messages.value.push({
@@ -140,25 +198,34 @@ async function sendMessage() {
   try {
     const resp = await postMessage(consultationId.value, userContent)
     messages.value = messages.value.filter((m) => m.id !== tempId)
-    messages.value.push({
-      id: resp.user_message_id,
-      consultation_id: consultationId.value,
-      role: "user",
-      content: userContent,
-      created_at: new Date().toISOString(),
-    })
-    messages.value.push({
-      id: resp.assistant_message_id,
-      consultation_id: consultationId.value,
-      role: "assistant",
-      content: resp.assistant_content,
-      created_at: new Date().toISOString(),
-    })
+    const now = new Date().toISOString()
+    messages.value.push(
+      {
+        id: resp.user_message_id,
+        consultation_id: consultationId.value,
+        role: "user",
+        content: userContent,
+        created_at: now,
+      },
+      {
+        id: resp.assistant_message_id,
+        consultation_id: consultationId.value,
+        role: "assistant",
+        content: resp.assistant_content,
+        created_at: now,
+      }
+    )
     await scrollToBottom()
-    consultation.value = await getConsultation(consultationId.value)
-    if (resp.ready_to_report) {
-      ElMessage.success("信息已充分，建议点击下方「生成报告」")
+
+    if (resp.extraction_error) {
+      ElMessage.warning(`事实抽取失败，本轮内容未结构化：${resp.extraction_error}`)
+    } else if (resp.new_fact_labels.length) {
+      ElMessage.success(`已记下：${resp.new_fact_labels.join("、")}`)
     }
+    if (resp.ready_to_report) {
+      ElMessage.success("必填事实已齐，可以生成报告了")
+    }
+    consultation.value = await getConsultation(consultationId.value)
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "发送失败")
     messages.value = messages.value.filter((m) => m.id !== tempId)
@@ -167,51 +234,83 @@ async function sendMessage() {
   }
 }
 
+// ===== 生成报告 =====
+async function handlePrimary() {
+  const a = primaryAction.value
+  if (a.kind === "stop") return stopStreaming()
+  if (a.kind === "none") return
+  if (a.kind === "generate") {
+    const missing = progress.value?.missing_required ?? []
+    if (missing.length) {
+      const labels = missing.map(
+        (k) => progress.value?.registry.find((s) => s.fact_key === k)?.fact_label ?? k
+      )
+      try {
+        await ElMessageBox.confirm(
+          `还差 ${missing.length} 项必填事实（${labels.join("、")}），先补齐质量更高。仍要生成？`,
+          "确认生成",
+          { confirmButtonText: "仍要生成", cancelButtonText: "先去补充" }
+        )
+      } catch {
+        return
+      }
+    } else {
+      try {
+        await ElMessageBox.confirm(
+          "AI 将基于当前所有事实和对话生成完整报告，是否继续？",
+          "生成报告",
+          { confirmButtonText: "生成", cancelButtonText: "再聊一会" }
+        )
+      } catch {
+        return
+      }
+    }
+  }
+  await startStreaming()
+}
+
 async function startStreaming() {
   if (streaming.value) return
-  if (messages.value.length === 0) {
-    ElMessage.warning("请先与 AI 对话补充事实")
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      "AI 将基于当前所有事实和对话生成完整报告，是否继续？",
-      "生成报告",
-      { confirmButtonText: "生成", cancelButtonText: "再聊一会" }
-    )
-  } catch {
-    return
-  }
-
   reportText.value = ""
   errorMsg.value = ""
-  firstChunkAt.value = null
-  totalChunks.value = 0
+  warnings.value = []
   aborted.value = false
   streaming.value = true
   streamController = new AbortController()
 
-  const t0 = performance.now()
   try {
-    for await (const event of generateReportStream(
+    // 状态机迁移 #6：先留痕「用户已确认」
+    const cf = await confirmReport(consultationId.value)
+    consultation.value = await getConsultation(consultationId.value)
+    if (cf.missing_required.length) {
+      ElMessage.warning(`提前生成：仍缺 ${cf.missing_required.length} 项必填事实`)
+    }
+  } catch (e) {
+    streaming.value = false
+    streamController = null
+    ElMessage.error(e instanceof Error ? e.message : "确认生成失败")
+    return
+  }
+
+  try {
+    for await (const ev of generateReportStream(
       consultationId.value,
       streamController.signal
     )) {
-      if (event.type === "chunk") {
-        if (firstChunkAt.value === null) {
-          firstChunkAt.value = (performance.now() - t0) / 1000
-        }
-        reportText.value += event.text
-        totalChunks.value += 1
-      } else if (event.type === "done") {
-        if (event.disclaimer) disclaimer.value = event.disclaimer
-        // 拉取落库的结论 → 渲染成持久化报告卡片
+      if (ev.type === "chunk") {
+        reportText.value += ev.text
+      } else if (ev.type === "reset") {
+        // 后端重试：清掉半截内容
+        reportText.value = ""
+      } else if (ev.type === "done") {
+        if (ev.disclaimer) disclaimer.value = ev.disclaimer
+        if (ev.warnings) warnings.value = ev.warnings
+        reportText.value = ""
         consultation.value = await getConsultation(consultationId.value)
-        reportText.value = "" // 清空流式原文，改用结构化卡片
-        await nextTick()
-        reportCardRef.value?.scrollIntoView({ behavior: "smooth", block: "start" })
-      } else if (event.type === "error") {
-        errorMsg.value = event.message
+        pane.value = "conclusions"
+      } else if (ev.type === "error") {
+        errorMsg.value = ev.message
+        consultation.value = await getConsultation(consultationId.value)
       }
     }
   } catch (e) {
@@ -243,13 +342,12 @@ async function newChat() {
     return
   }
   if (!consultation.value) return
-  const con = consultation.value
   try {
-    const newCon = await createConsultation(
-      con.project_id,
-      con.scenario as "contract_review" | "variation"
+    const c = await createConsultation(
+      consultation.value.project_id,
+      consultation.value.scenario
     )
-    router.push(`/consultation/${newCon.id}`)
+    router.push(`/consultation/${c.id}`)
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "新建失败")
   }
@@ -264,22 +362,25 @@ function backToProject() {
 
 <template>
   <div class="consultation">
-    <!-- 顶部：面包屑式返回（P0-5：不再依赖浏览器 history） -->
-    <el-page-header
-      :title="`问诊 #${consultationId}`"
-      :content="scenarioLabel"
-      class="mb-16"
-      @back="backToProject"
-    />
+    <!-- 顶部：返回 + 标题 + 状态 -->
+    <header class="topbar">
+      <el-page-header
+        :title="`问诊 #${consultationId}`"
+        :content="scenarioLabel"
+        @back="backToProject"
+      />
+      <div class="spacer" />
+      <el-tag size="small" :type="statusTagType">{{ statusLabel }}</el-tag>
+      <el-button size="small" class="ml-8" @click="newChat">新建问诊</el-button>
+    </header>
 
-    <!-- 加载失败（P0-1：可见错误 + 可返回） -->
     <el-alert
       v-if="loadError"
       :title="`加载问诊失败：${loadError}`"
       type="error"
       :closable="false"
       show-icon
-      class="mb-16"
+      class="mb-12"
     >
       <template #default>
         <el-button size="small" class="mt-8" @click="backToProject">
@@ -289,180 +390,254 @@ function backToProject() {
     </el-alert>
 
     <template v-else>
-      <!-- 状态条 -->
-      <div class="status-bar mb-16">
-        <el-tag size="small" :type="scenarioKind === 'variation' ? 'danger' : 'primary'">
-          {{ scenarioLabel }}
-        </el-tag>
-        <el-tag
-          size="small"
-          :type="status === 'completed' ? 'success' : 'warning'"
-          class="ml-8"
+      <!-- 步骤条（§5.3 只展示，不可点击回退） -->
+      <ol class="stepper" :class="{ failed: stepFailed }">
+        <li
+          v-for="(s, i) in STEPS"
+          :key="s.key"
+          class="stepper-item"
+          :class="{ active: i === activeStep, done: i < activeStep }"
         >
-          {{ statusLabel }}
-        </el-tag>
-        <el-tag size="small" type="info" class="ml-8">
-          已采集事实 {{ factCount }}
-        </el-tag>
-        <el-tag v-if="hasReport" size="small" type="info" class="ml-8">
-          结论 {{ conclusions.length }} 条
-        </el-tag>
-        <div class="spacer" />
-        <el-button size="small" @click="newChat">新建问诊</el-button>
-      </div>
+          <span class="dot">{{ i < activeStep ? "✓" : i + 1 }}</span>
+          <span class="step-label">{{ s.label }}</span>
+        </li>
+      </ol>
 
-      <!-- 聊天区 -->
-      <div ref="messagesScrollRef" class="chat-scroll">
-        <div v-if="messages.length === 0" class="empty-hint">
-          <el-empty :description="`开始对话，描述你的${scenarioKind === 'variation' ? '变更事实' : '合同条款'}`" />
-        </div>
-        <div v-for="m in messages" :key="m.id" :class="['msg', `msg-${m.role}`]">
-          <div class="avatar">{{ m.role === "user" ? "我" : "AI" }}</div>
-          <div class="bubble">
-            <div class="content">{{ m.content }}</div>
-            <div class="time">{{ m.created_at.slice(11, 16) }}</div>
-          </div>
-        </div>
-        <div v-if="sending" class="msg msg-assistant">
-          <div class="avatar">AI</div>
-          <div class="bubble bubble-typing">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 报告卡片（持久化：来自 DB conclusions） -->
-      <div v-if="hasReport || streaming || aborted || errorMsg" ref="reportCardRef" class="report-card">
-        <!-- 免责声明（AGENTS.md 应用原则 4：前置展示） -->
-        <el-alert
-          :title="disclaimer || '⚠️ 本报告由 AI 生成，仅供工程人员参考，不构成法律意见。重大决策前请由执业律师复核。'"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="disclaimer"
+      <!-- 两栏主体 -->
+      <div class="panes">
+        <ConsultationFactsPanel
+          :progress="progress"
+          :facts="facts"
+          :step="step"
+          :busy="generating"
+          @confirm="handlePrimary"
         />
 
-        <div class="report-header">
-          <span class="report-title">📄 {{ scenarioLabel }}报告</span>
-          <div class="spacer" />
-          <el-tag v-if="streaming" type="warning" size="small">生成中...</el-tag>
-          <el-tag v-else type="success" size="small">已生成</el-tag>
-        </div>
-
-        <!-- 流式进行中：显示原始输出（临时） -->
-        <div v-if="streaming" class="stream-preview">
-          <div class="stats mb-8">
-            <el-tag v-if="firstChunkAt !== null" type="info" size="small">
-              首 chunk {{ firstChunkAt.toFixed(2) }}s
-            </el-tag>
-            <el-tag v-if="totalChunks > 0" type="info" size="small" class="ml-8">
-              {{ totalChunks }} chunks
-            </el-tag>
+        <section class="pane-right">
+          <!-- 分段控件（§3.1 方案 A） -->
+          <div class="segments">
+            <button
+              class="seg"
+              :class="{ on: pane === 'chat' }"
+              @click="pane = 'chat'"
+            >
+              对话
+              <span v-if="messages.length" class="seg-n">{{ messages.length }}</span>
+            </button>
+            <button
+              class="seg"
+              :class="{ on: pane === 'conclusions' }"
+              :disabled="!hasReport && !generating"
+              @click="pane = 'conclusions'"
+            >
+              结论
+              <span v-if="conclusions.length" class="seg-n">{{
+                conclusions.length
+              }}</span>
+            </button>
+            <button
+              class="seg"
+              :class="{ on: pane === 'artifacts' }"
+              :disabled="!artifacts.length"
+              @click="pane = 'artifacts'"
+            >
+              文书
+              <span v-if="artifacts.length" class="seg-n">{{ artifacts.length }}</span>
+            </button>
             <div class="spacer" />
-            <el-button size="small" type="danger" plain @click="stopStreaming">
-              停止生成
-            </el-button>
-          </div>
-          <pre class="stream-text">{{ reportText }}<span class="cursor">▊</span></pre>
-        </div>
-
-        <!-- 生成完成：结构化风险列表 -->
-        <template v-else>
-          <div class="overview mb-16">
-            <el-tag v-if="riskStats.red" type="danger" size="large">
-              🔴 红线 {{ riskStats.red }}
-            </el-tag>
-            <el-tag v-if="riskStats.yellow" type="warning" size="large" class="ml-8">
-              🟡 黄区 {{ riskStats.yellow }}
-            </el-tag>
-            <el-tag v-if="riskStats.green" type="success" size="large" class="ml-8">
-              🟢 可控 {{ riskStats.green }}
-            </el-tag>
+            <span v-if="generating" class="seg-status">
+              <span class="spin" />{{ step === "generating_artifacts" ? "生成文书中" : "生成报告中" }}
+            </span>
           </div>
 
-          <div
-            v-for="c in conclusions"
-            :key="c.id"
-            :class="['risk-item', `risk-${c.level}`]"
-          >
-            <div class="risk-head">
-              <span class="risk-icon">{{ levelMeta[c.level]?.icon ?? "•" }}</span>
-              <el-tag :type="levelMeta[c.level]?.type ?? 'info'" size="small">
-                {{ levelMeta[c.level]?.label ?? c.level }}
-              </el-tag>
-              <span class="risk-title">{{ c.title }}</span>
-            </div>
-            <div class="risk-body">{{ c.content }}</div>
+          <div class="pane-body">
+            <!-- ===== 对话 ===== -->
+            <template v-if="pane === 'chat'">
+              <div ref="messagesScrollRef" class="chat-scroll">
+                <el-alert
+                  title="⚠️ 本对话由 AI 引导，结论仅供参考，重大决策请由执业律师复核。"
+                  type="warning"
+                  :closable="false"
+                  class="mb-12"
+                />
+                <div v-if="!messages.length" class="empty-hint">
+                  <el-empty
+                    :description="`描述你的${scenarioKind === 'variation' ? '变更争议' : '合同条款'}，AI 会逐项追问补齐事实`"
+                    :image-size="72"
+                  />
+                </div>
+                <div
+                  v-for="m in messages"
+                  :key="m.id"
+                  class="msg"
+                  :class="[`msg-${m.role}`]"
+                >
+                  <div class="avatar">
+                    {{ m.role === "user" ? "我" : m.role === "system" ? "!" : "AI" }}
+                  </div>
+                  <div class="bubble">
+                    <div class="content">{{ m.content }}</div>
+                    <div class="time">{{ m.created_at.slice(11, 16) }}</div>
+                  </div>
+                </div>
+                <div v-if="sending" class="msg msg-assistant">
+                  <div class="avatar">AI</div>
+                  <div class="bubble bubble-typing">
+                    <span class="dot-typing" /><span class="dot-typing" /><span
+                      class="dot-typing"
+                    />
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- ===== 结论 ===== -->
+            <template v-else-if="pane === 'conclusions'">
+              <el-alert
+                :title="
+                  disclaimer ||
+                  '⚠️ 以下报告仅供参考，重大决策请咨询执业律师复核。'
+                "
+                type="warning"
+                :closable="false"
+                show-icon
+                class="mb-12"
+              />
+              <el-alert
+                v-if="globalBasisGap"
+                :title="globalBasisGap"
+                type="info"
+                :closable="false"
+                show-icon
+                class="mb-12"
+              />
+
+              <!-- 生成中：流式预览 -->
+              <div v-if="generating" class="stream-preview">
+                <pre class="stream-text">{{ reportText
+                  }}<span class="cursor">▊</span></pre>
+              </div>
+
+              <template v-else-if="hasReport">
+                <div class="overview">
+                  <el-tag v-if="riskStats.red" type="danger" size="large">
+                    🔴 红线 {{ riskStats.red }}
+                  </el-tag>
+                  <el-tag
+                    v-if="riskStats.yellow"
+                    type="warning"
+                    size="large"
+                    class="ml-8"
+                  >
+                    🟡 黄区 {{ riskStats.yellow }}
+                  </el-tag>
+                  <el-tag
+                    v-if="riskStats.green"
+                    type="success"
+                    size="large"
+                    class="ml-8"
+                  >
+                    🟢 可控 {{ riskStats.green }}
+                  </el-tag>
+                </div>
+
+                <ConsultationConclusionCard
+                  v-for="(c, i) in conclusions"
+                  :key="c.id"
+                  :conclusion="c"
+                  :facts="facts"
+                  :warnings="evidenceWarnings"
+                  :index="i"
+                />
+
+                <el-alert
+                  v-if="consultation?.dispute_summary_ai"
+                  :title="consultation.dispute_summary_ai"
+                  type="success"
+                  :closable="false"
+                  show-icon
+                  class="mt-8"
+                />
+              </template>
+
+              <el-empty v-else description="还没有生成结论" :image-size="72" />
+            </template>
+
+            <!-- ===== 文书（第二轮落地，§4.5）===== -->
+            <template v-else>
+              <el-empty
+                description="文书功能将在下一轮落地（5 类：签证单 / 索赔报告 / 监理通知单 / 工作联系单 / 审查意见备忘录）"
+                :image-size="72"
+              />
+            </template>
+
+            <el-alert
+              v-if="errorMsg"
+              :title="errorMsg"
+              type="error"
+              :closable="false"
+              show-icon
+              class="mt-12"
+            />
+            <el-alert
+              v-if="aborted"
+              title="已取消生成，可再次点击「生成报告」重试"
+              type="info"
+              :closable="false"
+              show-icon
+              class="mt-12"
+            />
           </div>
-
-          <el-alert
-            v-if="consultation?.dispute_summary_ai"
-            :title="consultation.dispute_summary_ai"
-            type="success"
-            :closable="false"
-            show-icon
-            class="mt-16"
-          />
-        </template>
-
-        <el-alert
-          v-if="errorMsg"
-          :title="errorMsg"
-          type="error"
-          :closable="false"
-          show-icon
-          class="mt-16"
-        />
-
-        <el-alert
-          v-if="aborted"
-          title="已取消生成，可再次点击「生成报告」重试"
-          type="info"
-          :closable="false"
-          show-icon
-          class="mt-16"
-        />
+        </section>
       </div>
 
-      <!-- 输入区（completed 时禁用而非隐藏） -->
-      <div class="input-bar">
+      <!-- 输入区 -->
+      <footer v-if="pane === 'chat'" class="input-bar">
         <el-input
           v-model="chatInput"
           type="textarea"
-          :rows="3"
-          :placeholder="
-            status === 'completed'
-              ? '本问诊已生成报告。如需继续追问，请点右上角「新建问诊」'
-              : placeholder
-          "
-          :disabled="sending || status === 'completed'"
+          :rows="2"
+          :placeholder="inputPlaceholder"
+          :disabled="inputDisabled"
           @keydown.ctrl.enter.prevent="sendMessage"
           @keydown.meta.enter.prevent="sendMessage"
         />
         <div class="input-actions">
           <small class="hint">
-            {{ status === "completed" ? "已完成" : `${hint} (Ctrl+Enter 发送)` }}
+            <template v-if="progress && progress.missing_required.length">
+              还差 {{ progress.missing_required.length }} 项必填：{{
+                progress.missing_required
+                  .map(
+                    (k) =>
+                      progress.registry.find((s) => s.fact_key === k)?.fact_label ?? k
+                  )
+                  .join("、")
+              }}
+            </template>
+            <template v-else-if="progress">必填事实已齐</template>
           </small>
           <div class="spacer" />
           <el-button
             type="primary"
             :loading="sending"
-            :disabled="!chatInput.trim() || status === 'completed'"
+            :disabled="!chatInput.trim() || inputDisabled"
             @click="sendMessage"
           >
             发送
           </el-button>
           <el-button
-            type="success"
+            v-if="primaryAction.kind !== 'none'"
+            :type="primaryAction.kind === 'stop' ? 'danger' : 'success'"
+            :plain="primaryAction.kind === 'stop'"
             :loading="streaming"
-            :disabled="status === 'completed'"
+            :disabled="sending || generating"
             class="ml-8"
-            @click="startStreaming"
+            @click="handlePrimary"
           >
-            生成报告
+            {{ primaryAction.label }}
           </el-button>
         </div>
-      </div>
+      </footer>
     </template>
   </div>
 </template>
@@ -471,147 +646,273 @@ function backToProject() {
 .consultation {
   display: flex;
   flex-direction: column;
-  /* 父容器 .app-main 已限定高度并提供滚动，这里用 100% 避免嵌套滚动条 */
   height: 100%;
-  padding: 24px;
+  padding: 20px 24px;
   background: #f5f7fa;
+  --pane-h: max(420px, calc(100vh - 300px));
 }
 
-.mb-16 {
-  margin-bottom: 16px;
+.topbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
-
-.mb-8 {
-  margin-bottom: 8px;
+.spacer {
+  flex: 1;
 }
-
+.mb-12 {
+  margin-bottom: 12px;
+}
 .mt-8 {
   margin-top: 8px;
 }
-
-.mt-16 {
-  margin-top: 16px;
+.mt-12 {
+  margin-top: 12px;
 }
-
 .ml-8 {
   margin-left: 8px;
 }
 
-.status-bar {
+/* ===== 步骤条 ===== */
+.stepper {
   display: flex;
   align-items: center;
-}
-
-.spacer {
-  flex: 1;
-}
-
-/* 聊天区 */
-.chat-scroll {
-  flex: 1;
-  overflow-y: auto;
+  gap: 4px;
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 8px 14px;
   background: #fff;
   border-radius: 8px;
-  padding: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  min-height: 180px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
+  overflow-x: auto;
 }
-
-.empty-hint {
+.stepper-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #c0c4cc;
+  white-space: nowrap;
+}
+.stepper-item:not(:last-child)::after {
+  content: "─";
+  margin: 0 6px;
+  color: #e4e7ed;
+}
+.stepper-item .dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f0f2f5;
+  color: #909399;
+  font-size: 11px;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  flex-shrink: 0;
+}
+.stepper-item.done {
+  color: #67c23a;
+}
+.stepper-item.done .dot {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+.stepper-item.active {
+  color: #409eff;
+  font-weight: 600;
+}
+.stepper-item.active .dot {
+  background: #409eff;
+  color: #fff;
+}
+.stepper.failed .stepper-item.active {
+  color: #f56c6c;
+}
+.stepper.failed .stepper-item.active .dot {
+  background: #f56c6c;
 }
 
+/* ===== 两栏 ===== */
+.panes {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  align-items: flex-start;
+}
+.pane-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: var(--pane-h);
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.segments {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #ebeef5;
+  flex-shrink: 0;
+  background: #fafcff;
+}
+.seg {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #606266;
+  padding: 5px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.seg:hover:not(:disabled) {
+  background: #ecf5ff;
+  color: #409eff;
+}
+.seg.on {
+  background: #409eff;
+  color: #fff;
+  font-weight: 600;
+}
+.seg:disabled {
+  color: #c0c4cc;
+  cursor: not-allowed;
+}
+.seg-n {
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 0 5px;
+  font-variant-numeric: tabular-nums;
+}
+.seg.on .seg-n {
+  background: rgba(255, 255, 255, 0.28);
+}
+.seg-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #e6a23c;
+}
+.spin {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #f3d19e;
+  border-top-color: #e6a23c;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+/* ===== 对话 ===== */
+.chat-scroll {
+  min-height: 100%;
+}
+.empty-hint {
+  padding-top: 40px;
+}
 .msg {
   display: flex;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   align-items: flex-start;
-  gap: 12px;
+  gap: 10px;
 }
-
 .msg-user {
   flex-direction: row-reverse;
 }
-
 .avatar {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: #fff;
+  background: #67c23a;
 }
-
 .msg-user .avatar {
   background: #409eff;
 }
-
-.msg-assistant .avatar {
-  background: #67c23a;
+.msg-system .avatar {
+  background: #e6a23c;
 }
-
 .bubble {
-  max-width: 70%;
-  padding: 12px 16px;
+  max-width: 76%;
+  padding: 10px 14px;
   border-radius: 8px;
   background: #f4f4f5;
   color: #303133;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
-
 .msg-user .bubble {
   background: #409eff;
   color: #fff;
 }
-
-.bubble .content {
-  margin-bottom: 4px;
+.msg-system .bubble {
+  background: #fdf6ec;
+  color: #b88230;
 }
-
 .bubble .time {
+  margin-top: 4px;
   font-size: 11px;
   color: #909399;
   text-align: right;
 }
-
 .msg-user .bubble .time {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.75);
 }
-
 .bubble-typing {
   display: flex;
   gap: 4px;
   align-items: center;
-  padding: 16px;
+  padding: 14px;
 }
-
-.dot {
-  width: 8px;
-  height: 8px;
+.dot-typing {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #909399;
   animation: typing 1.4s infinite ease-in-out;
 }
-
-.dot:nth-child(2) {
+.dot-typing:nth-child(2) {
   animation-delay: 0.2s;
 }
-
-.dot:nth-child(3) {
+.dot-typing:nth-child(3) {
   animation-delay: 0.4s;
 }
-
 @keyframes typing {
-  0%, 60%, 100% {
+  0%,
+  60%,
+  100% {
     transform: scale(0.8);
     opacity: 0.5;
   }
@@ -621,137 +922,64 @@ function backToProject() {
   }
 }
 
-/* 报告卡片 */
-.report-card {
-  margin-top: 12px;
-  background: #fff;
-  border-radius: 8px;
-  padding: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  max-height: 45vh;
-  overflow-y: auto;
-}
-
-.disclaimer {
-  margin-bottom: 12px;
-}
-
-.report-header {
-  display: flex;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.report-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #303133;
-}
-
+/* ===== 结论 ===== */
 .overview {
   display: flex;
   align-items: center;
+  margin-bottom: 14px;
 }
-
 .stream-preview {
   background: #fafafa;
   border-radius: 4px;
   padding: 12px;
 }
-
-.stats {
-  display: flex;
-  align-items: center;
-}
-
 .stream-text {
   margin: 0;
-  font-family: "Menlo", "Monaco", "Courier New", monospace;
+  font-family: "Menlo", "Monaco", monospace;
   font-size: 12px;
   line-height: 1.6;
   color: #606266;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 240px;
+  max-height: 60vh;
   overflow-y: auto;
 }
-
 .cursor {
-  display: inline-block;
   animation: blink 1s step-end infinite;
   color: #409eff;
 }
-
 @keyframes blink {
   50% {
     opacity: 0;
   }
 }
 
-/* 风险条目 */
-.risk-item {
-  border-left: 3px solid #dcdfe6;
-  padding: 10px 0 10px 12px;
-  margin-bottom: 12px;
-  background: #fafafa;
-  border-radius: 0 4px 4px 0;
-}
-
-.risk-item.risk-red {
-  border-left-color: #f56c6c;
-  background: #fef0f0;
-}
-
-.risk-item.risk-yellow {
-  border-left-color: #e6a23c;
-  background: #fdf6ec;
-}
-
-.risk-item.risk-green {
-  border-left-color: #67c23a;
-  background: #f0f9eb;
-}
-
-.risk-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.risk-icon {
-  font-size: 14px;
-}
-
-.risk-title {
-  font-weight: 600;
-  color: #303133;
-}
-
-.risk-body {
-  color: #606266;
-  font-size: 13px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-/* 输入区 */
+/* ===== 输入区 ===== */
 .input-bar {
   margin-top: 12px;
   background: #fff;
   border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  padding: 10px 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
 }
-
 .input-actions {
   display: flex;
   align-items: center;
   margin-top: 8px;
 }
-
 .hint {
   color: #909399;
   font-size: 12px;
+}
+
+/* ===== 窄屏（<1280px）：左栏折叠到顶部 ===== */
+@media (max-width: 1280px) {
+  .consultation {
+    --pane-h: max(360px, calc(100vh - 420px));
+  }
+  .panes {
+    flex-direction: column;
+  }
 }
 </style>

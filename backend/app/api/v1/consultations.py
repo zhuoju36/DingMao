@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.consultation_state import ConsultationStep, can_transition
 from app.core.deps import get_current_user
 from app.core.exceptions import ConsultationError, PermissionDeniedError
 from app.models.base import get_db
@@ -25,6 +26,7 @@ from app.models.user import User, UserRole
 from app.schemas.consultation import (
     ChatTurnResponse,
     ConclusionResponse,
+    ConfirmReportResponse,
     ConsultationCreate,
     ConsultationListResponse,
     ConsultationMessageCreate,
@@ -215,6 +217,9 @@ async def get_consultation(
 
 
 def _to_response(c: Consultation) -> ConsultationResponse:
+    facts = list(c.facts)
+    state = c.state_data or {}
+    warnings = state.get("evidence_warnings") or []
     return ConsultationResponse(
         id=c.id,
         project_id=c.project_id,
@@ -225,8 +230,12 @@ def _to_response(c: Consultation) -> ConsultationResponse:
         current_step=c.current_step,
         created_at=c.created_at,
         updated_at=c.updated_at,
-        facts=[FactResponse.model_validate(f) for f in c.facts],
-        conclusions=[ConclusionResponse.model_validate(c) for c in c.conclusions],
+        facts=[FactResponse.model_validate(f) for f in facts],
+        conclusions=[ConclusionResponse.model_validate(x) for x in c.conclusions],
+        fact_progress=consultation_engine.build_fact_progress(
+            facts, consultation_engine.pending_from_state(state)
+        ),
+        evidence_warnings=warnings if isinstance(warnings, list) else [],
     )
 
 
@@ -259,6 +268,61 @@ async def post_message(
         assistant_content=result["assistant_content"],
         ready_to_report=result["ready_to_report"],
         fact_count=result["fact_count"],
+        current_step=result["current_step"],
+        new_fact_labels=result["new_fact_labels"],
+        pending_facts=result["pending_facts"],
+        fact_progress=result["fact_progress"],
+        extraction_error=result["extraction_error"],
+    )
+
+
+@router.post(
+    "/{consultation_id}/confirm",
+    response_model=ConfirmReportResponse,
+)
+async def confirm_report(
+    consultation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ConfirmReportResponse:
+    """用户确认生成报告（状态机迁移 #6：awaiting_confirm → generating_report）。
+
+    与 generate-report-stream 的分工：
+    - 本端点只做**状态迁移与校验**，让"用户确认"这个动作在状态机里留痕，
+      并能在状态不对时明确拒绝（如已生成过）。
+    - 实际的 LLM 流式生成仍走 generate-report-stream。
+
+    consultation-ui.md §5.1 允许必填未齐时提前生成：此时不阻断，
+    但在响应里返回 missing_required，由前端提示。
+    """
+    consultation = await _get_consultation(db, consultation_id, user)
+    current = consultation.current_step or ConsultationStep.INIT.value
+
+    if current == ConsultationStep.DONE.value:
+        raise ConsultationError("本次问诊已生成报告，如需继续请新建问诊")
+    if current in (
+        ConsultationStep.GENERATING_REPORT.value,
+        ConsultationStep.GENERATING_ARTIFACTS.value,
+    ):
+        # 已在生成中，幂等返回，避免用户连点造成重复生成
+        return ConfirmReportResponse(
+            consultation_id=consultation.id,
+            current_step=current,
+            ready_to_report=True,
+        )
+    if not can_transition(current, ConsultationStep.GENERATING_REPORT.value):
+        raise ConsultationError(f"当前状态（{current}）不允许生成报告")
+
+    consultation.current_step = ConsultationStep.GENERATING_REPORT.value
+    await db.commit()
+
+    facts = await consultation_engine.load_facts(db, consultation.id)
+    progress = consultation_engine.build_fact_progress(facts)
+    return ConfirmReportResponse(
+        consultation_id=consultation.id,
+        current_step=consultation.current_step,
+        ready_to_report=not progress.missing_required,
+        missing_required=progress.missing_required,
     )
 
 

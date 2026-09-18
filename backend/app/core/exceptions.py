@@ -28,6 +28,17 @@ class LLMAllProvidersFailedError(LLMError):
     status_code = 503
 
 
+class LLMResponseFormatError(LLMError):
+    """LLM 返回内容不符合要求的格式（如要求 JSON 却给了散文）。
+
+    由调用方决定重试（把错误塞回下一轮让 LLM 自修）还是降级，
+    LLMClient 本身不重试格式错误。
+    """
+
+    code = "llm_response_format_error"
+    status_code = 502
+
+
 # ====== 知识库相关 ======
 class KnowledgeBaseError(AppError):
     code = "knowledge_base_error"

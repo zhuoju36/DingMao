@@ -1,0 +1,454 @@
+# 问诊界面设计（Consultation UI）
+
+> 日期：2026-09-19
+> 状态：**已定稿**（用户 2026-09-19 拍板"按推荐做"）
+> 范围：`scenario="variation"`（变更扯皮）为主，`contract_review` 共用布局但状态机简化
+> 关联：`docs/product/ia.md`（信息架构）、`docs/product/w3-w8-state-and-facts.md`（状态机）、
+> `docs/product/w3-w8-triple-evidence.md`（三依据）、`docs/product/w3-w8-artifacts.md`（文书）
+
+---
+
+## 一、现状诊断
+
+`frontend/src/views/Consultation.vue`（757 行）是**单栏上下堆叠**：聊天区 `flex:1` + 报告卡片
+`max-height:45vh`。对照产品定义逐条核，有 7 个问题：
+
+| # | 问题 | 证据 |
+|---|---|---|
+| 1 | **事实完全不可见** | 只渲染 `已采集事实 {{ factCount }}` 一个数字徽章（L305）。用户看不到系统记下了什么 |
+| 2 | **三依据一个都没渲染** | `ConsultationConclusion` 有 `fact_refs`/`law_refs`/`standard_refs`/`reasoning_chain`/`counter_arguments`，API 全返回、TS 类型全声明，模板只用了 `c.title` 和 `c.content`（L393-395）。**产品最核心的"数据确凿优先"在界面上不存在** |
+| 3 | **状态机不可见** | `current_step` 在 API 和 TS 类型里都有，UI 从未使用 |
+| 4 | **缺什么不知道** | `VARIATION_REQUIRED_FACT_KEYS` 6 个必填键，界面上没有任何呈现 |
+| 5 | **文书无入口** | `consultation_artifacts` 表已建、模型已定义，但后端**无任何 artifacts 端点**，无 `app/templates/`，无 Jinja2 依赖 |
+| 6 | **两个滚动区互抢高度** | 聊天 `flex:1` + 报告 `45vh`，小屏上两边都被压扁 |
+| 7 | **事实产生过程是假的** | `fact_key` 实际写的是 `chat_turn_{n}`，不是 9 个规范键 |
+
+### 1.1 实测确认的硬 bug：状态机第一步即卡死
+
+`consultation_engine.chat_turn` 写入的 `fact_key` 是 `chat_turn_{n}`，
+`consultation_state.is_facts_sufficient` 比对的是 `VARIATION_REQUIRED_FACT_KEYS`。两个集合**按构造不相交**：
+
+```
+必填 fact_key : dispute_summary, dispute_type, dispute_date,
+                parties_in_dispute, evidence_list, contract_clause_ref
+触发器产出     : 业主指令, 保修期约定, 审计/审减条款, 工期争议, 现场签证,
+                背靠背付款条款, 设计变更, 违约金约定, 隐蔽工程验收
+
+REQ & LABELS = frozenset()      ← 空集（已实测）
+```
+
+**后果**：`collecting_facts → awaiting_confirm` 这条迁移永远不可能触发，6 节点状态机停在第一步。
+
+### 1.2 实测确认：🟥 强条依据恒为空
+
+- `consultation_engine.py:452-453` 硬编码 `law_refs=[]` / `standard_refs=[]`
+- `knowledge_search.search_standards` 只被 `api/v1/knowledge.py` 调用，**问诊链路从不调它**
+
+**后果**：即便状态机跑通，结论里的 🟨🟥 也永远是空的——依据链断在生成那一刻。
+
+### 1.3 LLM 行为实测（MiniMax-M3）
+
+| 场景 | 现象 | 结论 |
+|---|---|---|
+| `chat()` + `response_format=json_object` | 先输出 `<think>…</think>` 再输出 JSON；764 字符 | thinking **必须剥离**；`chat()` 缺 `json_mode` 开关（`stream_chat()` 有，不对称） |
+| 同上 + `extra_body={"thinking":{"type":"disabled"}}` | 无 `<think>`，但 JSON 被 ` ```json ` 围栏包裹；138 字符 | 快 5.5×、省 token；围栏必须剥离 |
+| `stream_chat(json_mode=True)` | 已正确禁用 thinking | `stream_report` 不受影响 |
+
+两条路径都需要清洗。现有 `chat.extract_json_object`（`\{.*\}` 贪婪）能处理 5 种形态，
+但**贪婪匹配对"think 块内含花括号"无防护**，需前置剥离。
+
+---
+
+## 二、核心判断：问诊不是聊天
+
+产品定义：「**结构化多轮事实采集，禁止自由提问**」（`docs/product/README.md:48`）。
+AI 的职责是**逐项追问待查事实**，不是陪聊。
+
+因此界面的主角是**「待查事项清单」的完成度**，对话只是达成它的手段。
+现有设计把这个关系倒置了——90% 的屏幕给聊天气泡，清单只剩一个数字。
+
+这条判断直接决定布局：**清单必须常驻主视野且实时更新**。
+
+---
+
+## 三、设计决策
+
+### 3.1 布局决策（用户 2026-09-19 选定）
+
+| 决策点 | 选择 | 备选与否决理由 |
+|---|---|---|
+| 栅格 | **两栏**：左栏 380px 固定 + 右栏自适应 | 与 `ProjectDocumentsTab` 同一套（用户已认可）；三栏在 1440px 笔记本上每栏只剩 ~400px，正文没法读 |
+| 右栏组织 | **A 分段控件** `[对话 n] [结论 n] [文书 n]` | 否决 B 单栏纵向+锚点（报告 4 条结论很长，滚动距离大）；否决 C 三栏（同上） |
+| 左栏 | **恒定不变**，不随右栏分段切换 | 保证"我提供了什么/还差什么"永远可见 |
+| 默认分段 | `collecting_facts`/`awaiting_confirm` → 对话；`done` → 结论 | 跟着用户当下的任务走 |
+| 窄屏 <1280px | 左栏折叠为顶部可展开的抽屉条 | 与档案 Tab 一致 |
+
+### 3.2 三个设计冲突的裁决（用户 2026-09-19 授权）
+
+W3-W8 文档内部存在三处自相矛盾，落地前必须定，裁决如下：
+
+#### (a) 三源证据缺失：硬抛错 vs 软 warning
+
+**裁决：不整条抛错，分两层处理。**
+
+| 层级 | 规则 | 依据 |
+|---|---|---|
+| **引用级（硬）** | 单条 `law_refs`/`standard_refs` 缺 `version` 或 `effective_date` → **丢弃该条引用** + 记 warning | 应用原则 3 是真红线："引用过期条文等同误导"。但惩罚落在**引用**上，不落在**结论**上 |
+| **结论级（软）** | 结论缺 `fact_refs` → **保留结论** + 记 warning + 前端标警示 | 应用原则 1 的原文是"**无依据不升格结论**"，不是"无依据不出结论"。硬抛错会让一次 LLM 漏填毁掉整轮生成 |
+
+否决"整条 `raise EvidenceValidationError`"：`w3-w8-triple-evidence.md` §4.3 标为红线，
+但与同文档 §4.1/§4.2/§9.1 的软 warning 表述冲突，且 §4.3 尾部残留与 `-> None` 签名矛盾的死代码。
+整条抛错会让 20 秒的生成过程因一条引用作废，违反"先跑通最小端到端"。
+
+#### (b) `consultation.system_warning` 字段归属
+
+**裁决：用已存在的 `consultations.state_data` JSONB**，不加列、不加迁移。
+
+结构：
+```json
+{
+  "evidence_warnings": [
+    {"scope": "conclusion", "index": 0, "type": "no_fact_basis", "detail": "结论未挂任何事实"},
+    {"scope": "ref", "index": 0, "type": "missing_law_version",
+     "detail": "丢弃引用：民法典 第580条（DB 中 version 为空）"}
+  ]
+}
+```
+
+否决新增列：第 1 轮文档明确 `Consultation` 表不加字段；`state_data` 当前完全未使用，就是为这类状态预留的。
+
+#### (c) `failed` 是否进 `ConsultationStep` 枚举
+
+**裁决：进。** `ConsultationStep` 和 `ConsultationStatus` 都加 `FAILED = "failed"`。
+
+理由：`w3-w8-state-and-facts.md` §2.2 迁移表 #8/#10 已引用 `failed`，
+§5.2 明确要求"写入 system 消息 + 状态置 failed + 不自动转 done"。
+状态机没有这个态，前端就无法表达"重试生成"这个分支。
+
+### 3.3 证据引用改为**检索优先**（新增决策，偏离 w3-w8-triple-evidence.md §3.2）
+
+原设计：LLM 输出 `{code, article_no}` → `EvidenceLinker` 模糊匹配 DB 补 `version`/`effective_date`。
+
+**改为检索优先**：
+
+1. 后端用当前 facts + 用户输入检索 `laws` / `law_articles` / `standard_clauses`
+2. 把候选条款**编号后**注入 prompt：`[L1] 民法典 第580条 …` / `[S1] GB 55001-2021 第4.1.1条 …`
+3. LLM **只输出标签** `fact_refs: [1,2]` / `law_refs: ["L1"]` / `standard_refs: ["S1"]`
+4. 后端按标签回映射到真实 DB 行，`version`/`effective_date` 直接取 DB 值
+
+**理由**：
+- 应用原则 2「LLM 不参与关键数字生成」——条款号就是关键数字。原设计让 LLM 先写条款号再校验，
+  是"先生成再纠错"；检索优先让 LLM **没有机会**写出条款号
+- 应用原则 3 自动满足：`version`/`effective_date` 直接来自 DB，不可能填错
+- 消掉 `EvidenceLinker` 的模糊匹配、`_normalize_article_no` 汉字/阿拉伯数字归一、
+  `_cn_to_int` 未验证逻辑等一整块不确定性（`w3-w8-triple-evidence.md` §7 待办 8）
+
+代价：候选召回不足时 LLM 无从选择 → 记为 `no_candidate_basis` warning，
+`reasoning_chain` 需说明"知识库无明确依据"。这是**可观测的降级**，优于幻觉。
+
+---
+
+## 四、布局与线框
+
+### 4.1 尺寸常量
+
+| 项 | 值 | 来源 |
+|---|---|---|
+| 左栏宽 | `380px` | 新增（档案 Tab 是 400px；问诊左栏内容是短标签，略窄） |
+| 栏间距 | `1px` 分隔线 | 同档案 Tab |
+| 面板高 | `--pane-h: max(420px, calc(100vh - 240px))` | 复用档案 Tab 常量 |
+| 输入区高 | `~92px`（3 行 textarea + 操作行） | 现有 |
+| 右栏正文最大宽 | `760px` | 复用 `DocumentReader`（40–45 汉字/行） |
+
+### 4.2 线框 A — 采集阶段（4/6）
+
+```
+← 安托山公园景观桥 / 变更扯皮 / #18              [新建问诊] [⋯]
+────────────────────────────────────────────────────────────────
+ ①采集事实 ─ ②确认 ─ ③生成报告 ─ ④生成文书 ─ ⑤完成
+────────────────────────────────────────────────────────────────
+┌─ 采集进度 ──────────────┐┌─ 对话 ─────────────────────────────┐
+│ 必填 4/6   ▓▓▓▓▓▓░░ 67% ││ ⚠️ 本对话由 AI 引导，结论仅供参考，  │
+│                         ││    重大决策请由执业律师复核。       │
+│ ✓ 争议摘要              │├───────────────────────────────────┤
+│ ✓ 争议类型    工期争议   ││                            10:23  │
+│ ✓ 争议日期    2026-03-15││ AI  请用一段话描述这次的争议。      │
+│ ✓ 争议方      2 方      ││                                   │
+│ ○ 证据清单     ◀ 正在问 ││                            10:24  │
+│ ○ 合同依据条款          ││ 我  业主 3 月 15 日口头指令增加幕墙 │
+│ ─────────────────────── ││     龙骨，只有监理通知单…           │
+│ 选填                    ││                                   │
+│ ○ 索赔金额              ││ AI  已记下「争议类型=工期争议」     │
+│ ○ 期望结果              ││     「争议日期=2026-03-15」。       │
+│ ○ 证据齐全              ││     您手头有哪些证据？现场照片？    │
+│ ─────────────────────── ││     监理通知单？签证单？            │
+│ 已采集事实 4    [展开]  ││                                   │
+│ 🟦 争议摘要        [✎]  ││                                   │
+│    业主口头指令增加…     ││                                   │
+│ 🟦 争议类型        [✎]  ││                                   │
+│    工期争议             ││                                   │
+│ 🟦 争议日期        [✎]  ││                                   │
+│    2026-03-15           ││                                   │
+│ ⚠️ 索赔金额             ││                                   │
+│    待人工确认      [补] ││                                   │
+└─────────────────────────┘└───────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│ 补充事实，或回答 AI 的追问…                          [发送]    │
+│ 还差 2 项必填：证据清单、合同依据条款 · Ctrl+Enter 发送         │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 线框 B — 待确认（6/6）
+
+```
+┌─ 采集进度 ──────────────┐┌─ 对话 ─────────────────────────────┐
+│ 必填 6/6   ▓▓▓▓▓▓▓▓ 已齐││                                   │
+│ ✓ 争议摘要              ││ AI  信息已充分，建议现在生成报告。  │
+│ ✓ 争议类型              ││     如需补充事实，也可以继续说。    │
+│ ✓ 争议日期              ││                                   │
+│ ✓ 争议方                ││                                   │
+│ ✓ 证据清单              ││                                   │
+│ ✓ 合同依据条款          ││                                   │
+│ ─────────────────────── ││                                   │
+│ 选填 1/3                ││                                   │
+│ ✓ 索赔金额    ¥860,000  ││                                   │
+│ ○ 期望结果              ││                                   │
+│ ○ 证据齐全              ││                                   │
+│                         ││                                   │
+│ ┌─────────────────────┐ ││                                   │
+│ │ ⚖️ 确认生成报告     │ ││                                   │
+│ └─────────────────────┘ ││                                   │
+│  将同时生成 5 类文书     ││                                   │
+└─────────────────────────┘└───────────────────────────────────┘
+```
+
+### 4.4 线框 C — 已完成 · 结论段
+
+```
+ ①采集事实 ─ ②确认 ─ ③生成报告 ─ ④生成文书 ─ ⑤完成
+┌─ 采集进度 ──────────────┐┌ [对话 12] [结论 4] [文书 5] ───────┐
+│ 必填 6/6 ✓              ││ ⚠️ 以下报告仅供参考，重大决策请咨询 │
+│ ...                     ││    执业律师复核。                  │
+│ ─────────────────────── │├───────────────────────────────────┤
+│ 证据清单 (3)            ││ 🔴 红线                            │
+│  · 监理通知单 #005      ││    未签证变更主张工期顺延缺书面依据 │
+│    2026-04-22           ││                                   │
+│  · 现场照片 12 张       ││ 业主 2026-03-15 口头指令增加幕墙…  │
+│  · 合同第 7.2 条        ││                                   │
+│                         ││ 🟦 依据事实                        │
+│                         ││    · 争议日期 2026-03-15           │
+│                         ││    · 合同依据条款 第 7.2 条         │
+│                         ││ 🟨 法律依据                        │
+│                         ││    民法典 第 580 条（2020）         │
+│                         ││    2021-01-01 生效                 │
+│                         ││ 🟥 强制条文                        │
+│                         ││    GB 55001-2021 第 4.1.1 条（强条）│
+│                         ││                                   │
+│                         ││ ▸ 推理链        ▸ 反例与例外        │
+│                         ││                                   │
+│                         ││ 🟡 黄区  …                         │
+│                         ││ 🟢 可控  …                         │
+└─────────────────────────┘└───────────────────────────────────┘
+```
+
+`推理链` / `反例与例外` **默认折叠**——它们是给**复核**用的，不是给**读结论**用的，
+展开会淹没重点。缺依据的引用降级为灰色 `⬜ 无明确依据` + tooltip 说明原因（见 §3.2a）。
+
+### 4.5 线框 D — 已完成 · 文书段（第二轮落地）
+
+```
+┌ [对话 12] [结论 4] [文书 5] ──────────────────────────────────┐
+│ ⚠️ 本文书由钉铆 AI 辅助生成，仅供参考。重大决策请咨询执业律师    │
+│    复核。                                                      │
+├────────────────────────────────────────────────────────────────┤
+│ ⚖️ 签证单            PRJ-4-V-001    [查看] [复制] [下载]        │
+│ 📋 索赔报告          PRJ-4-C-001    [查看] [复制] [下载]        │
+│ 🔔 监理通知单        PRJ-4-N-001    [查看] [复制] [下载]        │
+│ ✉️ 工作联系单        PRJ-4-L-001    [查看] [复制] [下载]        │
+│ 📝 审查意见备忘录    PRJ-4-M-001    [查看] [复制] [下载]        │
+├────────────────────────────────────────────────────────────────┤
+│ ┌─ 预览：签证单 ────────────────────────────────────────┐      │
+│ │ ⚠️ 本文书由钉铆 AI 辅助生成…（顶部，应用原则 4）       │      │
+│ │ # 工程签证单                                          │      │
+│ │ 编号：PRJ-4-V-001          日期：2026-03-20           │      │
+│ │ …                                                     │      │
+│ │ ⚠️ 本文书由钉铆 AI 辅助生成…（文末）                   │      │
+│ └───────────────────────────────────────────────────────┘      │
+└────────────────────────────────────────────────────────────────┘
+```
+
+免责声明**顶部 + 底部双显**（应用原则 4 + `w3-w8-artifacts.md` P0-4）。
+
+---
+
+## 五、交互细则
+
+### 5.1 主按钮随状态 morph
+
+不是一直挂着"生成报告"。
+
+| 当前 step | 主按钮 | 行为 |
+|---|---|---|
+| `init` / `collecting_facts`（未齐） | `生成报告`（次要样式） | 点击弹确认："还差 N 项必填事实（…），先补齐质量更高。仍要生成？" |
+| `awaiting_confirm` | `确认生成报告`（主样式，左栏底部高亮） | 附注"将同时生成 5 类文书" |
+| `generating_report` / `generating_artifacts` | `停止生成` | 复用现有 AbortController |
+| `done` | 隐藏，改 `新建问诊` | 输入框禁用并说明原因 |
+| `failed` | `重试生成` | 附 §5.2 的 system 消息 |
+
+**允许提前生成**（不硬拦）：必填未齐时只警告不阻断。理由：用户可能只有部分材料，
+强行阻断会让产品不可用；警告把选择权留给用户，符合 `ia.md` §五"用户控制权最大"。
+
+### 5.2 事实卡必须可编辑
+
+不是锦上添花。`w3-w8-state-and-facts.md` §2.4 定义了**置信度闸门**：
+`claimed_amount` / `dispute_date` / `contract_clause_ref` 的 LLM 推断值 `< 0.7` 时
+**不写库**，落成 `fact_label="⚠️ 待人工确认"` + 空值，**等用户手动补**。
+
+所以编辑是设计要求的必经环节。低置信（`< 0.6`）标 `⚠️`；闸门项高亮 + `[补]` 按钮。
+
+### 5.3 顶部步骤条只展示，不可点击
+
+5 步：`①采集事实 ②确认 ③生成报告 ④生成文书 ⑤完成`。
+
+状态机是单向的（`init` 瞬时、`abandoned` 是出口，都不上图）。
+步骤条允许点击回退会让用户误以为能撤销已发生的生成。
+
+---
+
+## 六、后端缺口与落地顺序
+
+### 6.1 缺口清单（按依赖排序）
+
+| # | 缺口 | 影响 |
+|---|---|---|
+| 1 | `fact_key` 写成 `chat_turn_{n}`，不是规范键 | 左栏必填清单**无法驱动**；`is_facts_sufficient` 永远 False |
+| 2 | `stream_report` 里 `law_refs=[]`/`standard_refs=[]` 硬编码 | 🟥🟨 徽章**永远为空** |
+| 3 | `search_standards` 从不被问诊调用 | 同上 |
+| 4 | 无 `POST /consultations/:id/confirm` | 状态机迁移 #6 无入口 |
+| 5 | 无 artifacts 端点（模型+表都有，无 API/模板/Jinja2） | 文书段整个不存在 |
+| 6 | 无事实编辑 API | 闸门项补不上 |
+| 7 | `new_fact_labels` 被 `response_model` 丢掉 | 无法显示"本轮记下了什么" |
+| 8 | `failed` 不在枚举里 | 失败态无处安放 |
+
+### 6.2 落地顺序（用户 2026-09-19 选定方案 1）
+
+**第一轮（本次）—— 主链跑通**：缺口 1、2、3、4、7、8
+目标：**采集 → 确认 → 结论（带 🟦🟨🟥）** 端到端可用
+
+**第二轮 —— 文书**：缺口 5（5 类模板 + artifacts 端点 + 线框 D）
+**第三轮 —— 事实编辑**：缺口 6（配合 §5.2）
+
+### 6.3 第一轮产出文件
+
+| 文件 | 动作 |
+|---|---|
+| `backend/app/core/constants.py` | 加 `FactKey` 权威登记表（key/label/type/必填/闸门） |
+| `backend/app/core/consultation_state.py` | 加 `FAILED`；`is_facts_sufficient` 补 `evidence_list` 非空校验 |
+| `backend/app/models/consultation.py` | `ConsultationStatus` 加 `FAILED` |
+| `backend/app/services/llm.py` | `chat()` 加 `json_mode`；加 `strip_reasoning()` |
+| `backend/app/services/fact_extraction.py` | **新建** —— LLM 抽取 → 规范键 + 闸门 |
+| `backend/app/services/evidence_linker.py` | **新建** —— 检索优先，标签 → DB 行映射 |
+| `backend/app/services/chat.py` | 删 `_FACT_TRIGGERS` 启发式；`search_standards` 接入 |
+| `backend/app/services/consultation_engine.py` | `chat_turn` 接真抽取；`stream_report` 接三依据 |
+| `backend/app/api/v1/consultations.py` | 加 `confirm` 端点；`ChatTurnResponse` 加字段 |
+| `backend/app/schemas/consultation.py` | `ChatTurnResponse` 加 `new_fact_labels`/`required_progress` |
+| `frontend/src/views/Consultation.vue` | 重写为两栏 + 分段控件 |
+| `frontend/src/types/consultation.ts` | 同步类型 |
+| `frontend/src/components/ConsultationFactsPanel.vue` | **新建** —— 左栏采集进度 |
+
+---
+
+## 七、变更记录
+
+| 日期 | 变更 |
+|---|---|
+| 2026-09-19 | 初版。诊断现状 7 项问题；确认状态机卡死与 🟥 恒空两个硬 bug；裁决 (a)(b)(c) 三个冲突；证据引用改检索优先；定两栏 + 分段控件布局 |
+
+---
+
+## 八、第一轮落地记录（2026-09-19）
+
+### 8.1 落地范围
+
+§6.2 方案 1（主链跑通）已完成：缺口 **1、2、3、4、7、8**。
+缺口 5（文书）与缺口 6（事实编辑）按计划推到第二/三轮。
+
+### 8.2 E2E 实测结果（真实 LLM，非 mock）
+
+`backend/scripts/test_consultation_e2e.py` —— 全绿：
+
+```
+[1] 创建 variation 问诊          step=init                       ✅
+[2] 多轮对话                     轮1 collecting_facts 必填5/6    ✅
+                                 轮2 awaiting_confirm 必填6/6    ✅ 状态机走通
+[3] 详情                         fact_progress + 8 条规范键事实   ✅
+[4] POST /confirm                step=generating_report          ✅
+[5] 流式生成                     460 chunk / 2175 字符 / done    ✅
+[6] 结论与三依据                 4 条结论，全带 🟦 + 推理链 + 反例 ✅
+    step=done  status=completed                                  ✅
+```
+
+### 8.3 落地过程中发现并修复的真 bug
+
+| # | Bug | 后果 | 修复 |
+|---|---|---|---|
+| 1 | `create_consultation` 对**所有**场景硬编码 `current_step="await_text"` | `variation` 拿不到 `init` 初态 → `init → collecting_facts` 永不触发 → 状态机停在第一步（E2E 首跑复现：事实已 6/6，step 仍是 `await_text`） | 按场景分流初态；新增 `ConsultationStep.AWAIT_TEXT` 与旧链迁移 |
+| 2 | 报告 prompt 的 JSON schema 里**根本没有** `fact_refs`/`law_refs`/`standard_refs`/`reasoning_chain`/`counter_arguments` | LLM 从未被要求输出这些字段 → 落库结论的三依据恒为空。这是缺口 2 的**真正源头**（不只是 `law_refs=[]` 那两行硬编码） | 重写 `build_report_messages`：事实带 id 下发、注入候选条款块、输出契约含全部三依据字段 |
+| 3 | `is_facts_sufficient` 只校验必填键齐，漏了 §2.2 要求的"`evidence_list` 非空" | 空证据清单下会误判"信息充分" | 补 `_parse_evidence` 校验（脏数据一律判不充分，不抛错） |
+| 4 | `generate_report`（mock）只改 `status` 不改 `current_step` | 合同审查问诊的 step 永远停在 `await_text` | 一并置 `done` |
+
+### 8.4 检索方案选型（实测驱动）
+
+`laws.version` 全空、无中文分词扩展、`tsv` 列 100% 空的前提下，实测对比三条路：
+
+| 方案 | 实测结果 | 结论 |
+|---|---|---|
+| 朴素关键词 ILIKE | 3 个查询只有 1 个命中 | 召回不足 |
+| `pg_trgm` `similarity()` | 相似度全在 0.000–0.020；把《海商法》索赔权转移排在《民法典》合同编之前 | 短查询 vs 长文档被长度主导，不可用 |
+| **领域术语重叠度排序** | Top-14 全部命中建设工程合同争议的正确条款（788/798/801/803/806/807…） | ✅ 采用 |
+
+最终实现零新依赖：一张领域术语表（`DOMAIN_TERMS`）+ 一个 SQL 聚合。
+
+### 8.5 ⚠️ 未解决的数据缺口：`laws.version` 全空
+
+**这是当前 🟨🟥 依据为空的确切原因，且不是代码问题。**
+
+```
+laws 总数                 177
+laws.version 非空           0     ← 全部为 NULL
+laws.effective_date 非空     1     ← 只有民法典
+standards 总数              1
+standard_clauses 总数        1
+```
+
+E2E 落库的 `state_data.evidence_candidates` 证据：
+
+```json
+{"laws": 3, "laws_citable": 0, "standards": 0, "standards_citable": 0,
+ "terms": ["监理","变更","书面","约定","工期","顺延","索赔"]}
+```
+
+**检索到了 3 条法条候选，但因缺版本号/生效日期，按 §3.2a 裁决全部丢弃。**
+
+同时确认：`knowledge-base/laws/dengcao-source/data/*.txt`（177 个文件）是**纯条文正文**，
+不含公布日期/施行日期；`seed_knowledge.py` 只手工 seed 了几部法律，不是这 177 部的导入器。
+**因此没有任何可用的权威版本数据可回填，也不能编造（应用原则 3）。**
+
+**解除条件**：从国家法律法规数据库导入 177 部法律的 `version` + `effective_date` 后，
+🟨 依据自动生效（代码路径已就绪，无需改动）。🟥 还额外需要先完成通用规范强条入库。
+
+### 8.6 门禁
+
+| 检查 | 结果 |
+|---|---|
+| `ruff check app/ scripts/` | ✅ All checks passed |
+| `mypy app/` | ✅ 44 source files, no issues |
+| `pytest tests/test_w3_w8_*.py` | ✅ 26 passed |
+| `tsc --noEmit` | ✅ 无错误 |
+| `vite build` | ✅ built in 17.94s |
+| 前后端字段契约核对 | ✅ 一致（`fact_progress` / `evidence_warnings` / 三依据） |
+| Vite dev server 编译三个组件 | ✅ HTTP 200 |
+
+`tests/test_e2e.py` 的 5 个 error 是**既有问题**（缺 `conftest.py` 的 `client` fixture），
+在本次改动前的 HEAD 上同样失败，未修。
+

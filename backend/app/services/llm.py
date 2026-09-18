@@ -6,6 +6,8 @@
 - 统一接口抽象（业务代码不直接依赖 SDK）
 """
 
+import json
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -16,7 +18,36 @@ from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
-from app.core.exceptions import LLMAllProvidersFailedError
+from app.core.exceptions import LLMAllProvidersFailedError, LLMResponseFormatError
+
+# ===== LLM 输出清洗 =====
+#
+# 实测（2026-09-19，MiniMax-M3）：
+#   chat() + response_format=json_object        → 先吐 <think>…</think>，再吐 JSON（764 字符）
+#   chat() + thinking disabled                  → 不吐 <think>，但 JSON 被 ```json 围栏包裹（138 字符）
+#   stream_chat(json_mode=True)                 → 已禁用 thinking，行为正确
+#
+# 两条路径都必须清洗。剥离 <think> 不只是为了解析：它同时省 5.5× 输出 token，
+# 且避免思考过程混进流式报告被用户看到。
+#
+# 注意 <think> 必须在抽 JSON **之前**剥离：贪婪的 \{.*\} 遇到含花括号的思考块会抽错。
+
+_RE_THINK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
+_RE_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+_RE_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def strip_reasoning(text: str) -> str:
+    """剥离 <think>…</think> 思考块与 markdown 代码围栏。"""
+    if not text:
+        return ""
+    return _RE_FENCE.sub("", _RE_THINK.sub("", text)).strip()
+
+
+def extract_json_object(text: str) -> str | None:
+    """从 LLM 输出中鲁棒提取第一个 JSON 对象（先剥思考块再抽）。"""
+    match = _RE_JSON_OBJECT.search(strip_reasoning(text))
+    return match.group(0).strip() if match else None
 
 
 class LLMTaskType(StrEnum):
@@ -123,6 +154,7 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: int | None = None,
         response_format: dict[str, str] | None = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
         """实际调用单个 provider。带重试。"""
         client = self._get_client(provider)
@@ -140,6 +172,10 @@ class LLMClient:
             kwargs["max_tokens"] = max_tokens
         if response_format is not None:
             kwargs["response_format"] = response_format
+        # M3 thinking 控制：JSON 模式禁用（与 stream_chat 对齐）。
+        # 不禁用会多花 5.5× 输出 token，且思考块混进 content 需额外剥离。
+        if provider == "minimax" and (json_mode or response_format is not None):
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         completion = await client.chat.completions.create(**kwargs)
         choice = completion.choices[0]
@@ -166,10 +202,15 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: int | None = None,
         response_format: dict[str, str] | None = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
         """调用 LLM，自动按降级链切换。
 
         任务 -> 首选 provider -> 失败 -> 下一个 provider -> 全部失败 -> 抛异常
+
+        Args:
+            json_mode: True 时禁用 provider 的思考模式（M3 需显式关闭），
+                仍返回原始 content —— 解析请用 complete_json()。
         """
         preferred = self._select_provider(task)
         chain = [preferred] + [p for p in FALLBACK_CHAIN if p != preferred]
@@ -183,6 +224,7 @@ class LLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,
+                    json_mode=json_mode,
                 )
             except Exception as e:  # noqa: BLE001
                 last_error = e
@@ -191,6 +233,44 @@ class LLMClient:
         raise LLMAllProvidersFailedError(
             f"所有 LLM provider 调用失败。最后错误: {last_error}"
         ) from last_error
+
+    async def complete_json(
+        self,
+        task: LLMTaskType,
+        messages: list[LLMMessage],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """调用 LLM 并返回解析后的 JSON 对象。
+
+        自动完成三件事：禁用思考模式、剥离 <think>/代码围栏、解析 JSON。
+
+        Raises:
+            LLMAllProvidersFailedError: provider 全失败
+            LLMResponseFormatError: 返回内容无法解析为 JSON 对象
+        """
+        resp = await self.chat(
+            task,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            json_mode=True,
+        )
+        raw = extract_json_object(resp.content)
+        if raw is None:
+            raise LLMResponseFormatError(
+                f"LLM 未返回 JSON 对象。provider={resp.provider} "
+                f"content_head={strip_reasoning(resp.content)[:200]!r}"
+            )
+        try:
+            parsed = json.loads(raw)
+        except ValueError as e:
+            raise LLMResponseFormatError(f"LLM 返回的 JSON 无法解析: {e}") from e
+        if not isinstance(parsed, dict):
+            raise LLMResponseFormatError(f"LLM 返回的不是 JSON 对象: {type(parsed).__name__}")
+        return parsed
 
     async def stream_chat(
         self,

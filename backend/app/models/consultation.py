@@ -22,6 +22,9 @@ class ConsultationStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     ABANDONED = "abandoned"
+    # consultation-ui.md §3.2(c)：LLM 3 次 retry 仍失败时置此状态，
+    # 不自动转 completed（w3-w8-llm-prompts.md §5.2）
+    FAILED = "failed"
 
 
 class Consultation(Base, TimestampMixin):

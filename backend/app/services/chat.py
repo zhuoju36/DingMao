@@ -28,23 +28,15 @@ _ROLE_LABELS = {
     UserRole.SUBCONTRACTOR: "其他分包商视角",
 }
 
-# --- 关键事实启发式（轻量关键词触发）---
-_FACT_TRIGGERS = [
-    (r"背靠背|背 靠 背|pay.{0,3}when.{0,3}paid", "背靠背付款条款"),
-    (r"审计|审减|审定价|核减", "审计/审减条款"),
-    (r"违约金.{0,8}(万分之|%|百分之|LPR|Lpr)", "违约金约定"),
-    (r"保修期|质量保修|缺陷责任期", "保修期约定"),
-    (r"工期.{0,8}(顺延|延误|延期|索赔)", "工期争议"),
-    (r"签证|现场签证|工程签证", "现场签证"),
-    (r"暂定价|暂估价|暂列金额", "暂定价/暂估价"),
-    (r"业主.{0,4}(指令|指示|要求)", "业主指令"),
-    (r"设计.{0,4}变更|设计变更|图纸.{0,4}变更", "设计变更"),
-    (r"隐蔽.{0,4}工程|隐蔽.{0,4}验收", "隐蔽工程验收"),
-]
-
 # --- 提示收尾的判断 ---
-def is_information_sufficient(fact_count: int, last_messages: list[ConsultationMessage]) -> bool:
+def is_information_sufficient(
+    fact_count: int, last_messages: list[ConsultationMessage]
+) -> bool:
     """启发式：信息已充分（建议生成报告）。
+
+    仅用于**合同审查**场景的旧简化链。变更扯皮场景走
+    `consultation_state.is_facts_sufficient`（必填键 + 证据非空），
+    不用这个"事实数 ≥4"的计数法。
 
     简单规则：
     - 已收集 ≥4 个事实
@@ -54,20 +46,6 @@ def is_information_sufficient(fact_count: int, last_messages: list[ConsultationM
         return True
     recent_assistant = [m for m in last_messages[-3:] if m.role == "assistant"]
     return len(recent_assistant) >= 3  # 3 轮都没新问题 → 信息差不多够了
-
-
-def extract_fact_labels(content: str) -> list[str]:
-    """从用户输入中抽取"已识别的事实类型"（用于状态显示）。
-
-    返回触发的 fact_label 列表（去重）。
-    """
-    seen: set[str] = set()
-    out: list[str] = []
-    for pattern, label in _FACT_TRIGGERS:
-        if re.search(pattern, content) and label not in seen:
-            seen.add(label)
-            out.append(label)
-    return out
 
 
 def build_chat_messages(
@@ -198,51 +176,66 @@ def build_report_messages(
     role: UserRole,
     scenario: str,
     facts: list[ConsultationFact],
-    knowledge_hits: list[dict[str, str]],
+    evidence_block: str,
     all_messages: list[ConsultationMessage],
 ) -> list[dict[str, str]]:
-    """组装"生成报告"的 LLM messages（合并所有上下文）。"""
+    """组装"生成报告"的 LLM messages（合并所有上下文）。
+
+    Args:
+        evidence_block: 由 `evidence_linker.EvidenceCandidates.render_for_prompt()`
+            渲染的候选条款清单。LLM **只能**从中挑标签，不得自己写条款号
+            （应用原则 2）。此前的版本没有任何证据块，也没有要求 LLM 输出
+            fact_refs/law_refs/standard_refs，导致落库的结论三依据恒为空。
+    """
     role_label = _ROLE_LABELS.get(role, "工程方")
     scenario_label = _SCENARIO_LABELS.get(scenario, scenario)
 
+    # 事实带 id 列出，LLM 才能用 fact_refs 指回来
     facts_text = (
-        "\n".join(f"- {f.fact_label}: {f.fact_value[:300]}" for f in facts)
+        "\n".join(
+            f"- [id={f.id}] {f.fact_label}: {f.fact_value[:300]}" for f in facts
+        )
         if facts
         else "（无）"
     )
 
-    kb_text = (
-        "\n".join(
-            f"- 《{h['law_name']}》第{h['article_no']}条: {h['content'][:200]}"
-            for h in knowledge_hits[:5]
-        )
-        if knowledge_hits
-        else "（无）"
-    )
-
-    # 场景化指令
     if scenario == "variation":
-        output_schema = (
-            "输出 JSON：{"
-            '"risks": [{"clause": "事实要点", "level": "red|yellow|green", '
-            '"reason": "风险分析 + 处理建议（建议具体可执行）"}], '
-            '"summary": "一句话结论"}'
-            "}"
-        )
+        advice = "风险分析 + 处理建议（建议具体可执行）"
     else:
-        output_schema = (
-            "输出 JSON：{"
-            '"risks": [{"clause": "条款摘要", "level": "red|yellow|green", '
-            '"reason": "风险分析 + 修改建议"}], '
-            '"summary": "一句话结论"}'
-            "}"
-        )
+        advice = "风险分析 + 修改建议"
 
     system_prompt = (
         f"你是钉铆争议顾问。角色：{role_label}。问诊类型：{scenario_label}。\n\n"
-        f"**已收集事实**：\n{facts_text}\n\n"
-        f"**相关法条知识库**：\n{kb_text}\n\n"
-        f"基于以上事实 + 知识库 + 与用户的对话历史，生成完整审查/分析报告。{output_schema}"
+        f"**已收集事实**（引用时只写 id 数字）：\n{facts_text}\n\n"
+        f"**可用证据条款**：\n{evidence_block}\n\n"
+        "**输出要求**：只输出 JSON，不要 markdown 围栏，不要任何解释文字。\n"
+        "{\n"
+        '  "risks": [\n'
+        "    {\n"
+        '      "title": "风险标题，不超过 20 字",\n'
+        '      "level": "red | yellow | green",\n'
+        f'      "content": "{advice}，200-500 字",\n'
+        '      "fact_refs": [事实 id 数组，至少 1 个，只能填上面列出的 id],\n'
+        '      "law_refs": ["L1", "L2"],\n'
+        '      "standard_refs": ["S1"],\n'
+        '      "reasoning_chain": "推理链，100-300 字",\n'
+        '      "counter_arguments": "反例与例外，100-200 字"\n'
+        "    }\n"
+        "  ],\n"
+        '  "summary": "一句话结论，不超过 100 字"\n'
+        "}\n\n"
+        "**等级判定**：\n"
+        "- red：明确违法 / 合同无效 / 必须立即整改\n"
+        "- yellow：风险较高 / 建议修改 / 有争议空间\n"
+        "- green：风险可控 / 合规 / 可保留\n\n"
+        "**铁律**（违反即视为生成失败）：\n"
+        "1. 每条 risk 的 fact_refs 必须非空——结论必须挂在事实上（应用原则 1）\n"
+        "2. law_refs / standard_refs **只能**填上面【可引用的…】清单里给出的标签。\n"
+        "   绝对禁止自己编写法律名称、条款号、版本号或生效日期（应用原则 2）\n"
+        "3. 上面没有可用条款时，law_refs / standard_refs 必须填 []，\n"
+        "   并在 reasoning_chain 中明确写出「知识库中无明确对应依据」\n"
+        "4. risks 数量 3-7 条；过多合并，过少补充\n"
+        "5. counter_arguments 必须有内容，体现对反向可能的考虑"
     )
 
     # 历史对话作为 user/assistant 消息
@@ -252,11 +245,6 @@ def build_report_messages(
 
     return [{"role": "system", "content": system_prompt}, *history]
 
-
-def extract_json_object(text: str) -> str | None:
-    """从 LLM 输出中鲁棒提取第一个完整 JSON 对象。"""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    return match.group(0).strip() if match else None
 
 
 def split_messages_for_history(messages: Iterable[ConsultationMessage]) -> list[ConsultationMessage]:

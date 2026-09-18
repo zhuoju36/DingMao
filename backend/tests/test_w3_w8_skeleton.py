@@ -106,22 +106,36 @@ def test_can_transition_abandon_any_non_done():
 
 
 def test_is_facts_sufficient_variation():
-    """第 1 轮 §2.2：变更扯皮场景必填 6 键全齐才充分。"""
+    """第 1 轮 §2.2：变更扯皮场景必填 6 键全齐**且证据清单非空**才算充分。"""
 
     class FakeFact:
-        def __init__(self, fact_key: str):
+        def __init__(self, fact_key: str, fact_value: str = "x"):
             self.fact_key = fact_key
+            self.fact_value = fact_value
 
-    # 全部齐
-    facts = [FakeFact(k) for k in VARIATION_REQUIRED_FACT_KEYS]
-    assert is_facts_sufficient("variation", facts) is True
+    def build(**overrides: str) -> list[FakeFact]:
+        """构造必填键全齐的事实列表；overrides 可覆盖某个键的值。"""
+        return [
+            FakeFact(k, overrides.get(k, '[{"type":"photo","ref":"p1"}]' if k == "evidence_list" else "x"))
+            for k in VARIATION_REQUIRED_FACT_KEYS
+        ]
 
-    # 缺一个
-    facts = [FakeFact(k) for k in VARIATION_REQUIRED_FACT_KEYS if k != "dispute_date"]
+    # 全部齐 + 证据非空
+    assert is_facts_sufficient("variation", build()) is True
+
+    # 缺一个键
+    facts = [f for f in build() if f.fact_key != "dispute_date"]
     assert is_facts_sufficient("variation", facts) is False
 
     # 完全空
     assert is_facts_sufficient("variation", []) is False
+
+    # 键齐但证据清单为空列表 → 不充分（§2.2 的"且 evidence_list 非空"，原实现漏了）
+    assert is_facts_sufficient("variation", build(evidence_list="[]")) is False
+
+    # 证据清单脏数据 → 判不充分，且不抛错
+    assert is_facts_sufficient("variation", build(evidence_list="{ 坏 JSON")) is False
+    assert is_facts_sufficient("variation", build(evidence_list="")) is False
 
 
 def test_is_facts_sufficient_contract_review_legacy():

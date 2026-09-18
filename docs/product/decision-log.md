@@ -170,3 +170,35 @@ subagent 独立审阅发现初始设计有 3 个红线违反 / silent failure，
 - **理由**: 决策日志 §2026-09 "Prompt 解耦"已预留 V2 升级路径，V1 简化不影响未来扩展——`PromptStore` 类内部升级时调用方 `prompt_store.render(key, **vars)` 接口不变
 - **影响/代价**: `app/core/prompts.py` V1 只 30 行（单层）；V2 升级时改 `__init__` 参数即可
 - **回退条件**: V1 落地后实际运营发现需要 A/B 测试，再升级 V2
+
+### 2026-09 | 问诊 UI：两栏 + 分段控件（不是聊天工具）
+- **决策**: 问诊页改为左栏 380px「采集进度」+ 右栏分段控件 `[对话][结论][文书]`，详见 [`docs/product/consultation-ui.md`](../product/consultation-ui.md)
+- **背景**: 现状是单栏上下堆叠的聊天界面（聊天 `flex:1` + 报告 `45vh`），但产品定义是「结构化多轮事实采集，**禁止自由提问**」——界面主角应是「待查事项清单」的完成度，对话只是手段。现状把关系倒置了：90% 屏幕给聊天气泡，事实只剩一个数字徽章；三依据（🟦🟨🟥）字段 API 全返回但模板一个都没渲染
+- **备选**:
+  - (a) 单栏纵向 + 粘性锚点导航（否决：报告 4 条结论很长，滚动距离大）
+  - (b) 三栏 事实|对话|结论（否决：1440px 笔记本上每栏只剩 ~400px，正文没法读）
+  - (c) 保持聊天气泡 + 侧边抽屉放事实（否决：清单不常驻，回答追问时看不见还差什么）
+- **理由**: 与 `ProjectDocumentsTab` 同一套栅格（已验证可用）；左栏恒定保证"我提供了什么/还差什么"永远可见；分段控件比锚点可预测
+- **影响/代价**: `frontend/src/views/Consultation.vue` 重写；新建 `ConsultationFactsPanel.vue`；后端需先补 6 个缺口（见下条）
+- **回退条件**: 实测用户主要在右栏工作、从不看左栏 → 退回单栏 + 抽屉
+
+### 2026-09 | 证据引用改「检索优先」，不让 LLM 写条款号
+- **决策**: 后端先检索 `laws`/`law_articles`/`standard_clauses`，把候选编号为 `[L1]`/`[S1]` 注入 prompt，LLM **只输出标签**，后端按标签回映射真实 DB 行取 `version`/`effective_date`。偏离 `w3-w8-triple-evidence.md` §3.2 原设计
+- **背景**: 原设计是 LLM 输出 `{code, article_no}` → `EvidenceLinker` 模糊匹配 DB 补版本号。落地时发现 `stream_report` 里 `law_refs=[]`/`standard_refs=[]` 是硬编码空数组，且 `search_standards` 从不被问诊调用——🟥 依据链从生成那一刻就断了
+- **备选**:
+  - (a) 维持原设计，实现 `EvidenceLinker` 模糊匹配（否决：需汉字/阿拉伯数字归一 + 未验证的 `_cn_to_int`，是"先生成再纠错"）
+  - (b) 只修硬编码 bug，不引入检索（否决：LLM 仍会编条款号）
+- **理由**: 应用原则 2「LLM 不参与关键数字生成」——条款号就是关键数字。检索优先让 LLM **没有机会**写出条款号；应用原则 3 自动满足（版本号直接来自 DB）。消掉一整块模糊匹配的不确定性
+- **影响/代价**: 新建 `evidence_linker.py`；候选召回不足时降级为 `no_candidate_basis` warning + `reasoning_chain` 说明"无明确依据"
+- **回退条件**: 实测候选召回率 < 60%（LLM 无从选择）→ 补混合检索（关键词 + 向量）
+
+### 2026-09 | 三源证据缺失的降级：引用级硬、结论级软
+- **决策**: 单条引用缺 `version`/`effective_date` → **丢弃该引用**；结论缺 `fact_refs` → **保留结论** + warning；warnings 写 `consultations.state_data` JSONB；`failed` 进 `ConsultationStep`/`ConsultationStatus` 枚举
+- **背景**: `w3-w8-triple-evidence.md` 内部三处互斥表述——§4.3 标"绝不写入 DB"硬抛错，§4.1/§4.2/§9.1 说软 warning 不阻塞，§4.3 尾部还残留与 `-> None` 签名矛盾的死代码；另 `system_warning` 字段归属未定（第 1 轮明确说 `Consultation` 表不加字段），迁移表 #8/#10 引用了枚举里不存在的 `failed`
+- **备选**:
+  - (a) 整条 `raise EvidenceValidationError`（否决：一次 LLM 漏填毁掉 20 秒生成过程，违反"先跑通最小端到端"）
+  - (b) 全部软 warning 静默通过（否决：应用原则 3 是红线）
+  - (c) 新增 `system_warning` 列（否决：第 1 轮已明确不加字段，且 `state_data` 空着就是为这类状态预留）
+- **理由**: 应用原则 1 原文是"**无依据不升格结论**"，不是"无依据不出结论"——惩罚应落在引用上，不落在结论上；应用原则 3 是真红线，缺版本号的引用必须丢掉
+- **影响/代价**: `consultations.state_data` 启用（原完全未使用）；`ConsultationStep`/`ConsultationStatus` 各加 `FAILED`
+- **回退条件**: 实测降级结论占比 > 30% → 说明知识库覆盖不足，优先补知识库而非收紧校验
