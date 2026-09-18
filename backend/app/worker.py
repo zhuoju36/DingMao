@@ -28,6 +28,14 @@ from app.models.document import ProjectDocument
 from app.services import ingest
 from app.services.storage import get_storage_root
 
+# ARQ 默认只放行 WARNING 以上，本模块的 logger.info（解析开始/成功）会被丢弃。
+# 排查解析问题时看不到「开始/成功」很难判断卡在哪一步，故显式配置。
+# basicConfig 对已配置过的 root logger 是 no-op，不会覆盖 uvicorn 的日志设置。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 
