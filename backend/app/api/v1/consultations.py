@@ -20,6 +20,7 @@ from app.core.deps import get_current_user
 from app.core.exceptions import ConsultationError, PermissionDeniedError
 from app.models.base import get_db
 from app.models.consultation import Consultation
+from app.models.project import Project
 from app.models.user import User, UserRole
 from app.schemas.consultation import (
     ChatTurnResponse,
@@ -174,13 +175,19 @@ async def generate_report_stream(
     - {"type": "chunk", "text": "..."}  - LLM 输出片段
     - {"type": "done", "summary": "...", "risk_count": N}  - 完成
     - {"type": "error", "message": "..."}  - 错误
+
+    role 取自项目（project.role），而非用户。
     """
     consultation = await _get_consultation(db, consultation_id, user)
+    project = await db.get(Project, consultation.project_id)
+    if project is None:
+        raise ConsultationError(f"项目不存在: {consultation.project_id}")
+    project_role = UserRole(project.role)
 
     async def event_generator() -> AsyncIterator[bytes]:
         try:
             async for event in consultation_engine.stream_report(
-                db, consultation, user=UserRole(user.role)
+                db, consultation, user=project_role
             ):
                 line = json.dumps(event, ensure_ascii=False) + "\n"
                 yield line.encode("utf-8")

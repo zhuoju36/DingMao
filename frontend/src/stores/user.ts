@@ -8,7 +8,8 @@ export interface UserInfo {
   id: number
   email: string
   fullName: string | null
-  role: UserRole
+  /** 新建项目时的默认角色（项目级 role 由 Project 持有，本字段不再代表当前角色） */
+  defaultRole: UserRole
 }
 
 export const useUserStore = defineStore(
@@ -18,7 +19,8 @@ export const useUserStore = defineStore(
     const userInfo = ref<UserInfo | null>(null)
 
     const isLoggedIn = computed(() => !!token.value)
-    const role = computed(() => userInfo.value?.role || null)
+    /** 默认角色（用于新建项目表单预填） */
+    const defaultRole = computed(() => userInfo.value?.defaultRole || null)
 
     function setAuth(t: string, info: UserInfo) {
       token.value = t
@@ -35,7 +37,7 @@ export const useUserStore = defineStore(
       localStorage.removeItem("token")
     }
 
-    return { token, userInfo, isLoggedIn, role, setAuth, logout }
+    return { token, userInfo, isLoggedIn, defaultRole, setAuth, logout }
   },
   {
     persist: {

@@ -3,7 +3,7 @@
 import { ref } from "vue"
 import { useRouter } from "vue-router"
 import { ElMessage } from "element-plus"
-import { useUserStore } from "@/stores/user"
+import { useUserStore, type UserRole } from "@/stores/user"
 import apiClient from "@/api"
 
 const router = useRouter()
@@ -14,9 +14,8 @@ const mode = ref<"login" | "register">("login")
 const email = ref(import.meta.env.DEV ? "demo@dingmao.com" : "")
 const password = ref(import.meta.env.DEV ? "Demo123456" : "")
 const fullName = ref("")
-const role = ref<"owner" | "designer" | "supervisor" | "contractor" | "subcontractor">(
-  "supervisor"
-)
+// 注册时采集的是"默认角色"（新建项目时的预填值；每个项目仍可独立选择）
+const defaultRole = ref<UserRole>("supervisor")
 const loading = ref(false)
 
 async function handleSubmit() {
@@ -33,7 +32,7 @@ async function handleSubmit() {
     }
     if (mode.value === "register") {
       body.full_name = fullName.value || null
-      body.role = role.value
+      body.default_role = defaultRole.value
     }
 
     const res = await apiClient.post<{ access_token: string }>(url, body)
@@ -45,7 +44,7 @@ async function handleSubmit() {
       id: number
       email: string
       full_name: string | null
-      role: typeof role.value
+      default_role: UserRole
       is_active: boolean
     }>("/auth/me")
 
@@ -53,7 +52,7 @@ async function handleSubmit() {
       id: me.id,
       email: me.email,
       fullName: me.full_name,
-      role: me.role,
+      defaultRole: me.default_role,
     })
 
     ElMessage.success(mode.value === "login" ? "登录成功" : "注册成功")
@@ -91,14 +90,17 @@ function toggleMode() {
         <el-form-item v-if="mode === 'register'" label="姓名">
           <el-input v-model="fullName" placeholder="可选" />
         </el-form-item>
-        <el-form-item v-if="mode === 'register'" label="角色">
-          <el-select v-model="role" style="width: 100%">
+        <el-form-item v-if="mode === 'register'" label="默认角色">
+          <el-select v-model="defaultRole" style="width: 100%">
             <el-option label="业主/建设单位" value="owner" />
             <el-option label="设计单位" value="designer" />
             <el-option label="监理单位" value="supervisor" />
             <el-option label="施工单位" value="contractor" />
             <el-option label="其他分包商" value="subcontractor" />
           </el-select>
+          <div class="role-hint">
+            作为新建项目时的预填值，每个项目仍可在新建时独立选择
+          </div>
         </el-form-item>
         <el-form-item label="密码">
           <el-input
@@ -152,6 +154,13 @@ function toggleMode() {
 .submit-btn {
   width: 100%;
   margin-top: 8px;
+}
+
+.role-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 .footer {

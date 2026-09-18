@@ -55,6 +55,7 @@ async def create_project(
         design_org=req.design_org,
         supervisor_org=req.supervisor_org,
         contractor_org=req.contractor_org,
+        role=req.role.value,  # 用户在本项目里的角色，LLM 视角依据
         contract_clauses={"contract_text": req.contract_text} if req.contract_text else None,
     )
     db.add(project)
@@ -151,6 +152,7 @@ def _to_response(p: Project) -> ProjectResponse:
         design_org=p.design_org,
         supervisor_org=p.supervisor_org,
         contractor_org=p.contractor_org,
+        role=p.role,
         contract_text=clauses.get("contract_text"),
         contract_clauses=p.contract_clauses,
     )

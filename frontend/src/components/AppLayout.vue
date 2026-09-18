@@ -3,7 +3,7 @@
 // 所有需要登录的页面都套这个 layout，避免「裸奔」页面
 import { computed } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage, ElMessageBox, ElTooltip } from "element-plus"
 import { useUserStore } from "@/stores/user"
 
 const route = useRoute()
@@ -18,8 +18,10 @@ const roleLabels: Record<string, string> = {
   contractor: "施工单位",
   subcontractor: "其他分包商",
 }
-const roleLabel = computed(() =>
-  userStore.role ? roleLabels[userStore.role] ?? userStore.role : "未设置"
+// header 显示的是「默认角色」（新建项目时的预填值）；
+// 实际进入每个项目时由 Project.role 决定 LLM 视角。
+const defaultRoleLabel = computed(() =>
+  userStore.defaultRole ? roleLabels[userStore.defaultRole] ?? userStore.defaultRole : "未设置"
 )
 
 const displayName = computed(
@@ -79,7 +81,9 @@ function handleNav(path: string) {
       <div class="spacer" />
 
       <div class="user-area">
-        <el-tag size="small" type="info">{{ roleLabel }}</el-tag>
+        <el-tooltip content="新建项目时的默认角色，每个项目可独立选择" placement="bottom">
+          <el-tag size="small" type="info">默认 {{ defaultRoleLabel }}</el-tag>
+        </el-tooltip>
         <el-dropdown trigger="click" class="ml-8">
           <span class="user-name">
             {{ displayName }}

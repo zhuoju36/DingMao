@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+from app.models.user import UserRole
 
 if TYPE_CHECKING:
     from app.models.consultation import Consultation  # noqa: F401
@@ -38,6 +39,11 @@ class Project(Base, TimestampMixin):
     design_org: Mapped[str | None] = mapped_column(String(200))
     supervisor_org: Mapped[str | None] = mapped_column(String(200))
     contractor_org: Mapped[str | None] = mapped_column(String(200))
+
+    # 用户在本项目的角色（LLM prompt 视角依据；项目级而非用户级）
+    role: Mapped[str] = mapped_column(
+        String(32), default=UserRole.SUPERVISOR.value, nullable=False
+    )
 
     # 合同关键条款（JSONB 存储解析后的结构化条款）
     contract_clauses: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

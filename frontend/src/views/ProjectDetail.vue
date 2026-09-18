@@ -10,6 +10,7 @@ import {
   type ConsultationListItem,
 } from "@/api/consultation"
 import { SCENARIOS } from "@/constants/scenarios"
+import type { UserRole } from "@/stores/user"
 
 interface Project {
   id: number
@@ -25,6 +26,16 @@ interface Project {
   design_org: string | null
   supervisor_org: string | null
   contractor_org: string | null
+  role: UserRole
+}
+
+// 角色中文标签（与 Projects/AppLayout 同步）
+const roleLabels: Record<UserRole, string> = {
+  owner: "业主/建设单位",
+  designer: "设计单位",
+  supervisor: "监理单位",
+  contractor: "施工单位",
+  subcontractor: "其他分包商",
 }
 
 const route = useRoute()
@@ -228,9 +239,13 @@ onMounted(fetchData)
             </div>
             <el-descriptions :column="2" border>
               <el-descriptions-item label="项目名称">{{ fmt(project.name) }}</el-descriptions-item>
+              <el-descriptions-item label="我在本项目">
+                <el-tag size="small">{{ roleLabels[project.role] ?? project.role }}</el-tag>
+              </el-descriptions-item>
               <el-descriptions-item label="工程编号">{{ fmt(project.code) }}</el-descriptions-item>
               <el-descriptions-item label="工程地点">{{ fmt(project.location) }}</el-descriptions-item>
               <el-descriptions-item label="合同金额">{{ fmtMoney(project.contract_amount) }}</el-descriptions-item>
+              <el-descriptions-item label="工期天数">{{ fmt(project.contract_duration_days?.toString()) }}</el-descriptions-item>
               <el-descriptions-item label="开工日期">{{ fmt(project.contract_start_date) }}</el-descriptions-item>
               <el-descriptions-item label="竣工日期">{{ fmt(project.contract_end_date) }}</el-descriptions-item>
               <el-descriptions-item label="建设单位">{{ fmt(project.owner_org) }}</el-descriptions-item>

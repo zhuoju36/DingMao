@@ -61,7 +61,7 @@ Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
 | email | str(255) | 唯一、登录标识 |
 | hashed_password | str(255) | bcrypt 哈希 |
 | full_name | str(100)? | 真实姓名 |
-| role | str(32) | UserRole 枚举（owner / designer / supervisor / contractor / subcontractor） |
+| default_role | str(32) | **新建项目时的默认角色**（UserRole 枚举：owner / designer / supervisor / contractor / subcontractor） |
 | is_active | bool | 启用标志 |
 | is_verified | bool | 邮箱已验证（MVP 跳过验证） |
 
@@ -72,7 +72,8 @@ Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
 
 ### 设计要点
 
-- 角色 MVP 单一角色，全局唯一，**不做角色切换**（已在 decision-log 中决策）
+- **角色已从用户级迁到项目级**（详见 `decision-log.md` 2026-05 追加条目）
+- `default_role` 仅用于新建项目时表单预填；每个 Project 持有独立的 `role` 字段
 - 不存敏感字段明文
 - 邮箱唯一约束在 DB 层
 
@@ -98,6 +99,7 @@ Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
 | design_org | str(200)? | 设计单位 |
 | supervisor_org | str(200)? | 监理单位 |
 | contractor_org | str(200)? | 施工单位 |
+| **role** | str(32) NOT NULL | **用户在本项目的角色（UserRole 枚举）；LLM 视角依据；项目创建时由 owner 选定** |
 | contract_clauses | JSONB? | W1 临时存放 contract_text，V2 改为独立 ProjectClause 表 |
 
 ### 关系
@@ -109,7 +111,9 @@ Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
 ### 设计要点
 
 - 单用户单项目约束（按 user_id 隔离）
+- **role 在项目创建时由 owner 选定，之后随项目走；同一用户在不同项目里可有不同 role**
 - 删除时级联删除 documents / consultations
+- V3 多人协作预留：`ProjectMember(project_id, user_id, role)` 关联表
 
 ---
 
@@ -403,3 +407,4 @@ LLM 上下文 = 通用知识 + 项目特有知识
 |---|---|
 | 2026-05 | 初版（W1 阶段） |
 | 2026-05 | 新增"项目特有知识层"V2 设计（ProjectNote / ProjectClause） |
+| 2026-05 | **角色机制反转：User.role → User.default_role；Project 新增 role（必填，LLM 视角依据）** |

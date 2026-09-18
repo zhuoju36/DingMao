@@ -25,10 +25,19 @@ from app.models.consultation import (
     ConsultationScenario,
     ConsultationStatus,
 )
+from app.models.project import Project
 from app.models.user import User, UserRole
 from app.schemas.consultation import ConsultationListItem
 from app.services.llm import LLMMessage, LLMTaskType, get_llm_client
 from app.services.llm_mock import generate_contract_review_report
+
+
+async def _resolve_project_role(db: AsyncSession, consultation: Consultation) -> UserRole:
+    """从 consultation 拿到所属项目的 role（LLM 视角依据）。"""
+    project = await db.get(Project, consultation.project_id)
+    if project is None:
+        raise ConsultationError(f"项目不存在: {consultation.project_id}")
+    return UserRole(project.role)
 
 
 async def submit_contract_text(
@@ -84,10 +93,11 @@ async def generate_report(
     if not contract_text:
         raise ConsultationError("未找到合同文本，请先调用 submit-text")
 
-    # 2. 调 mock LLM
+    # 2. role 取自项目（用户在本项目里的角色），非 user.role
+    role = await _resolve_project_role(db, consultation)
     report = generate_contract_review_report(
         contract_text=contract_text,
-        role=UserRole(user.role),
+        role=role,
     )
 
     # 3. 写结论
@@ -215,14 +225,8 @@ async def chat_turn(
     # 2b. 知识库检索（用用户输入做关键词）
     knowledge_hits = await search_laws(db, user_content, limit=3)
 
-    # 2c. 加载 user（取角色）
-    from sqlalchemy import select
-
-    from app.models.user import User
-
-    user_result = await db.execute(select(User).where(User.id == consultation.user_id))
-    user = user_result.scalar_one()
-    role = UserRole(user.role)
+    # 2c. role 取自项目（用户在本项目里的角色），非 user.role
+    role = await _resolve_project_role(db, consultation)
     msgs = build_chat_messages(
         role=role,
         scenario=consultation.scenario,

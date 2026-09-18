@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.models.user import UserRole
+
 
 class ProjectCreate(BaseModel):
     """创建项目（合同审查场景下，W1 不上传文件，仅录入基础信息）。"""
@@ -24,6 +26,9 @@ class ProjectCreate(BaseModel):
     design_org: str | None = Field(default=None, max_length=200)
     supervisor_org: str | None = Field(default=None, max_length=200)
     contractor_org: str | None = Field(default=None, max_length=200)
+
+    # 用户在本项目的角色（必填，LLM 视角依据）
+    role: UserRole
 
     # W1：合同关键条款用纯文本，结构化在 W2 上传文件时做
     contract_text: str | None = Field(
@@ -48,6 +53,9 @@ class ProjectResponse(BaseModel):
     design_org: str | None
     supervisor_org: str | None
     contractor_org: str | None
+
+    # 用户在本项目的角色
+    role: UserRole
 
     # W1 直接返回合同文本（不做结构化）
     contract_text: str | None = None

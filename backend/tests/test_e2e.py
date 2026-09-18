@@ -33,7 +33,7 @@ async def test_register_and_login(client: AsyncClient) -> str:
             "email": email,
             "password": password,
             "full_name": "测试用户",
-            "role": "supervisor",
+            "default_role": "supervisor",
         },
     )
     assert r.status_code == 201, f"register failed: {r.status_code} {r.text}"
@@ -70,12 +70,14 @@ async def test_create_project(client: AsyncClient, token: str) -> int:
             "contract_amount": "12800000.00",
             "owner_org": "XX 地产公司",
             "contractor_org": "XX 工程集团",
+            "role": "supervisor",  # 用户在本项目里的角色（项目级）
             "contract_text": "本合同采用背靠背付款方式，业主付款后再支付施工方。审计机关审计结果作为结算依据。",
         },
     )
     assert r.status_code == 201, f"create project failed: {r.status_code} {r.text}"
     project = r.json()
-    print(f"✓ 创建项目 #{project['id']} ({project['name']})")
+    assert project["role"] == "supervisor"
+    print(f"✓ 创建项目 #{project['id']} ({project['name']}) role={project['role']}")
     return project["id"]
 
 
