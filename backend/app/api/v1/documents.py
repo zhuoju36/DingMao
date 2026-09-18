@@ -1,21 +1,23 @@
-"""项目档案路由（P0-7-A 上传 / P0-7-B 解析）。
+"""项目档案路由（P0-7-A 上传 / P0-7-B 解析 / P0-7-C 下载 + 轻量列表）。
 
 端点：
-- POST   /api/v1/projects/{project_id}/documents              上传（自动入队解析）
-- GET    /api/v1/projects/{project_id}/documents              列项目档案
-- GET    /api/v1/projects/{project_id}/documents/{id}         详情
-- POST   /api/v1/projects/{project_id}/documents/{id}/reparse 重新解析
-- DELETE /api/v1/projects/{project_id}/documents/{id}         删除（含文件 + 解析产物）
+- POST   /api/v1/projects/{project_id}/documents                上传（自动入队解析）
+- GET    /api/v1/projects/{project_id}/documents                列项目档案（轻量，不含 markdown）
+- GET    /api/v1/projects/{project_id}/documents/{id}           详情（含 parsed_content.markdown）
+- GET    /api/v1/projects/{project_id}/documents/{id}/download  下载源文件
+- POST   /api/v1/projects/{project_id}/documents/{id}/reparse   重新解析
+- DELETE /api/v1/projects/{project_id}/documents/{id}           删除（含文件 + 解析产物）
 
-解析流水线见 app/worker.py；状态机见 docs/product/upload-flow.md §五。
+解析流水线见 app/worker.py；状态机与 UI 规约见 docs/product/upload-flow.md §五/§七。
 """
 
 import shutil
 import tempfile
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +28,7 @@ from app.models.document import DocumentType, ProjectDocument
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.document import (
+    DocumentListItem,
     DocumentListResponse,
     DocumentResponse,
     DocumentUploadResponse,
@@ -137,7 +140,11 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DocumentListResponse:
-    """列项目下所有档案（按上传时间倒序）。"""
+    """列项目下所有档案（按上传时间倒序）。
+
+    返回**轻量列表项**：不含 parsed_content.markdown（避免列表响应膨胀），
+    只给解析结果的标量摘要（页数 / 字数 / 耗时）。
+    """
     await _get_owned_project(db, project_id, user)
 
     result = await db.execute(
@@ -147,8 +154,30 @@ async def list_documents(
     )
     items = result.scalars().all()
     return DocumentListResponse(
-        items=[DocumentResponse.model_validate(d) for d in items],
+        items=[_to_list_item(d) for d in items],
         total=len(items),
+    )
+
+
+def _to_list_item(doc: ProjectDocument) -> DocumentListItem:
+    """ORM -> 轻量列表项（从 parsed_content 提取标量摘要）。"""
+    parsed: dict[str, Any] = doc.parsed_content or {}
+    return DocumentListItem(
+        id=doc.id,
+        project_id=doc.project_id,
+        uploader_id=doc.uploader_id,
+        document_type=cast(DocumentType, doc.document_type),
+        title=doc.title,
+        file_name=doc.file_name,
+        file_size=doc.file_size,
+        mime_type=doc.mime_type,
+        parse_status=cast(ParseStatus, doc.parse_status),
+        parse_error=doc.parse_error,
+        page_count=int(parsed.get("page_count") or 0),
+        markdown_chars=int(parsed.get("markdown_chars") or 0),
+        parse_elapsed_sec=parsed.get("elapsed_sec"),
+        created_at=doc.created_at,
+        updated_at=doc.updated_at,
     )
 
 
@@ -162,6 +191,39 @@ async def get_document(
     """档案详情（含 parsed_content：Markdown 正文 + 解析元信息）。"""
     doc = await _get_owned_document(db, project_id, document_id, user)
     return DocumentResponse.model_validate(doc)
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    project_id: int,
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    """下载原始文件（P0-7-C）。
+
+    文件名走 Content-Disposition；用 RFC 5987 的 filename* 编码中文名，
+    避免部分浏览器把中文文件名变成乱码。
+    """
+    doc = await _get_owned_document(db, project_id, document_id, user)
+
+    abs_path = storage.get_storage_root() / doc.storage_path
+    if not abs_path.exists():
+        raise DocumentValidationError(f"源文件已丢失: {doc.storage_path}")
+
+    from urllib.parse import quote
+
+    quoted = quote(doc.file_name)
+    return FileResponse(
+        path=abs_path,
+        media_type=doc.mime_type or "application/octet-stream",
+        headers={
+            # filename= 给老浏览器兜底；filename*= 给现代浏览器（支持 UTF-8）
+            "Content-Disposition": (
+                f"attachment; filename=\"{doc.id}\"; filename*=UTF-8''{quoted}"
+            )
+        },
+    )
 
 
 @router.post("/{document_id}/reparse", response_model=ReparseResponse)

@@ -11,6 +11,8 @@ import {
 } from "@/api/consultation"
 import { SCENARIOS } from "@/constants/scenarios"
 import type { Project, UserRole } from "@/types/project"
+import { Plus } from "@element-plus/icons-vue"
+import ProjectDocumentsTab from "@/components/ProjectDocumentsTab.vue"
 
 // 角色中文标签（与 Projects/AppLayout 同步）
 const roleLabels: Record<UserRole, string> = {
@@ -29,6 +31,8 @@ const project = ref<Project | null>(null)
 const loading = ref(false)
 const loadError = ref("")
 const activeTab = ref("overview")
+/** 归档文件数（由 ProjectDocumentsTab emit，用于 Tab 徽章） */
+const documentCount = ref(0)
 const starting = ref<string | null>(null)
 
 // 各场景的历史问诊
@@ -368,9 +372,20 @@ onMounted(fetchData)
           </el-button>
         </el-tab-pane>
 
-        <!-- 归档文件 -->
-        <el-tab-pane label="归档文件" name="documents">
-          <el-empty description="归档文件功能在 W2 阶段实现" />
+        <!-- 归档文件（P0-7-C） -->
+        <el-tab-pane name="documents">
+          <template #label>
+            归档文件
+            <el-badge
+              v-if="documentCount"
+              :value="documentCount"
+              class="tab-badge"
+            />
+          </template>
+          <ProjectDocumentsTab
+            :project-id="projectId"
+            @count-change="documentCount = $event"
+          />
         </el-tab-pane>
       </el-tabs>
     </div>

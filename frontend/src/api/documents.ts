@@ -1,4 +1,4 @@
-// 项目档案 API（P0-7-A 上传 / P0-7-B 解析）
+// 项目档案 API（P0-7-A 上传 / P0-7-B 解析 / P0-7-C 下载 + 轻量列表）
 import apiClient from "./index"
 
 // 与后端 app/schemas/document.py 对齐
@@ -20,6 +20,39 @@ export type ParseStatus =
 
 export type StorageProvider = "local" | "cos"
 
+/** 文档类型的中文标签（UI 复用，与后端 DocumentType 一一对应）。 */
+export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
+  contract: "合同",
+  bidding: "招标文件",
+  variation: "签证单",
+  correspondence: "往来文件",
+  inspection: "监理通知单",
+  evidence: "其他证据",
+}
+
+/**
+ * 列表项（轻量）—— 与后端 DocumentListItem 对齐。
+ * 不含 markdown；解析摘要为标量（page_count / markdown_chars / parse_elapsed_sec）。
+ */
+export interface DocumentListItem {
+  id: number
+  project_id: number
+  uploader_id: number
+  document_type: DocumentType
+  title: string
+  file_name: string
+  file_size: number
+  mime_type: string
+  parse_status: ParseStatus
+  parse_error: string | null
+  page_count: number
+  markdown_chars: number
+  parse_elapsed_sec: number | null
+  created_at: string
+  updated_at: string
+}
+
+/** 详情（含解析产物，markdown 内联）。 */
 export interface DocumentResponse {
   id: number
   project_id: number
@@ -63,13 +96,13 @@ export interface DocumentUploadResponse {
 }
 
 export interface DocumentListResponse {
-  items: DocumentResponse[]
+  items: DocumentListItem[]
   total: number
 }
 
 // ===== API 函数 =====
 
-/** 上传文件到项目档案（multipart/form-data）。 */
+/** 上传文件到项目档案（multipart/form-data），成功后后端自动入队解析。 */
 export async function uploadDocument(
   projectId: number,
   file: File,
@@ -87,17 +120,17 @@ export async function uploadDocument(
   )
 }
 
-/** 列出项目下所有档案。 */
+/** 列出项目下所有档案（轻量项）。 */
 export async function listDocuments(
   projectId: number
-): Promise<DocumentResponse[]> {
+): Promise<DocumentListItem[]> {
   const r = await apiClient.get<DocumentListResponse>(
     `/projects/${projectId}/documents`
   )
   return r.items
 }
 
-/** 档案详情（含解析产物）。 */
+/** 档案详情（含解析产物 markdown）。 */
 export async function getDocument(
   projectId: number,
   documentId: number
@@ -105,6 +138,35 @@ export async function getDocument(
   return apiClient.get<DocumentResponse>(
     `/projects/${projectId}/documents/${documentId}`
   )
+}
+
+/**
+ * 下载原始文件并触发浏览器保存。
+ *
+ * 为什么不用 <a href>：接口需要 Authorization 头，普通链接带不上。
+ * 这里用 axios 取 blob → createObjectURL → 触发下载 → 释放 URL。
+ */
+export async function downloadDocument(
+  projectId: number,
+  documentId: number,
+  fileName: string
+): Promise<void> {
+  const blob = await apiClient.get<Blob>(
+    `/projects/${projectId}/documents/${documentId}/download`,
+    { responseType: "blob" }
+  )
+  const url = URL.createObjectURL(blob)
+  try {
+    const a = document.createElement("a")
+    a.href = url
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } finally {
+    // 必须释放，否则 blob 常驻内存直到页面卸载
+    URL.revokeObjectURL(url)
+  }
 }
 
 export interface ReparseResponse {

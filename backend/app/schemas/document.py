@@ -24,6 +24,39 @@ ParseStatus = Literal[
 StorageProvider = Literal["local", "cos"]  # P0-7-A 只用 local
 
 
+class DocumentListItem(BaseModel):
+    """项目档案**列表项**（轻量，P0-7-C）。
+
+    【为什么不复用 DocumentResponse】
+    DocumentResponse 含 parsed_content.markdown（单份可达数十 KB）。
+    列表若返回它，20 份文档的列表响应会膨胀到几百 KB —— 移动端/弱网明显卡。
+    这里只暴露解析结果的**标量摘要**，markdown 由详情接口按需取。
+    """
+
+    id: int
+    project_id: int
+    uploader_id: int
+
+    document_type: DocumentType
+    title: str
+    file_name: str
+    file_size: int
+    mime_type: str
+
+    parse_status: ParseStatus
+    parse_error: str | None
+
+    # 从 parsed_content JSONB 提取的标量摘要（未解析时为 None/0）
+    page_count: int = 0
+    markdown_chars: int = 0
+    parse_elapsed_sec: float | None = None
+
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class DocumentResponse(BaseModel):
     """项目档案响应（详情含 parsed_content）。"""
 
@@ -65,9 +98,9 @@ class ReparseResponse(BaseModel):
 
 
 class DocumentListResponse(BaseModel):
-    """项目档案列表（含分页总数）。"""
+    """项目档案列表（含总数）。items 为轻量列表项，不含 markdown。"""
 
-    items: list[DocumentResponse]
+    items: list[DocumentListItem]
     total: int
 
 
