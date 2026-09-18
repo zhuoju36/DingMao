@@ -43,7 +43,12 @@ from app.schemas.consultation import (
     FactSpecOut,
     PendingFactOut,
 )
-from app.services.evidence_linker import link_evidence, retrieve_candidates
+from app.services.evidence_linker import (
+    LAW_TERMS,
+    STANDARD_TERMS,
+    link_evidence,
+    retrieve_candidates,
+)
 from app.services.fact_extraction import (
     ExtractedFact,
     ExtractionResult,
@@ -441,6 +446,85 @@ async def chat_turn(
     }
 
 
+_EXPAND_SYSTEM = """你是工程法律检索助手。任务：从给定词表中**挑选**与案情相关的检索词。
+
+铁律：
+1. 只能从下面给出的词表里挑词，**绝对不许自己造词**。
+   原因：这些词是经过验证的、确定能在法条/强条原文里查到的；
+   你自造的词（如「工程变更」）在原文里并不存在，会导致检索落空。
+2. 挑选标准：该词是这起争议在法律上的**核心概念**，而不是案情的复述。
+3. 挑 8-14 个词，覆盖：争议主体、争议标的、法律行为、法律后果。
+4. 只输出 JSON：{"terms": ["词1", "词2", ...]}
+"""
+
+
+async def expand_search_terms(
+    *, facts: list[ConsultationFact], user_content: str
+) -> list[str]:
+    """用 LLM 从**受控词表**里挑选法律检索词（查询扩展）。
+
+    为什么需要：案情是口语（"索赔""工期顺延"），法条是法言法语
+    （"赔偿损失""顺延工程日期"），子串匹配对不上。实测主场景
+    （幕墙变更 + 索赔 + 工期顺延）仅靠案情自身用词召回 **0 条**候选；
+    加上扩展词后 6 条，且命中《民法典》第806条（转包/解除）等正确条款。
+
+    为什么必须是"选"而不是"写"：让 LLM 自由生成检索词会产出「工程变更」
+    这类词——而法条原文写的是「工程范围」「变更」，子串匹配必然落空。
+    受控词表保证产出的词一定能查到。
+
+    Returns:
+        受控词表内的扩展词；失败返回空列表（检索退化为仅用案情自身用词，
+        不阻断报告生成）。
+    """
+    case_parts = [f"{f.fact_label}：{f.fact_value}" for f in facts]
+    case_parts.append(f"用户描述：{user_content}")
+    case_text = "\n".join(case_parts)[:2500]
+
+    prompt = (
+        "【可选词表 — 法条检索词】\n"
+        + "、".join(LAW_TERMS)
+        + "\n\n【可选词表 — 强条检索词】\n"
+        + "、".join(STANDARD_TERMS)
+        + f"\n\n【案情】\n{case_text}\n\n只输出 JSON："
+    )
+
+    client = get_llm_client()
+    try:
+        payload = await client.complete_json(
+            LLMTaskType.CLAUSE_EXTRACTION,
+            [
+                LLMMessage("system", _EXPAND_SYSTEM),
+                LLMMessage("user", prompt),
+            ],
+            temperature=0.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("检索词扩展失败，退化为仅用案情用词: %s", e)
+        return []
+
+    raw = payload.get("terms")
+    if not isinstance(raw, list):
+        return []
+
+    allowed = set(LAW_TERMS) | set(STANDARD_TERMS)
+    picked: list[str] = []
+    dropped: list[str] = []
+    for t in raw:
+        word = str(t).strip()
+        if not word:
+            continue
+        if word in allowed:
+            if word not in picked:
+                picked.append(word)
+        else:
+            dropped.append(word)
+
+    if dropped:
+        logger.info("检索词扩展：丢弃 %d 个不在受控词表内的词 %s", len(dropped), dropped)
+    logger.info("检索词扩展：采用 %d 个 %s", len(picked), picked)
+    return picked
+
+
 async def load_facts(
     db: AsyncSession, consultation_id: int
 ) -> list[ConsultationFact]:
@@ -579,7 +663,12 @@ async def stream_report(
 
     # 三依据检索（检索优先：先把候选条款编号注入 prompt，LLM 只挑标签。
     # 见 app/services/evidence_linker.py 模块文档与决策日志 §2026-09）
-    candidates = await retrieve_candidates(db, search_text)
+    # 查询扩展：把案情口语映射到法条词汇（否则子串匹配召回接近 0）
+    extra_terms = await expand_search_terms(
+        facts=list(consultation_full.facts),
+        user_content=search_text,
+    )
+    candidates = await retrieve_candidates(db, search_text, extra_terms=extra_terms)
     evidence_block = candidates.render_for_prompt()
 
     fact_by_id = {f.id: f for f in consultation_full.facts}

@@ -34,7 +34,6 @@ from app.core.exceptions import LLMAllProvidersFailedError, LLMResponseFormatErr
 
 _RE_THINK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
 _RE_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
-_RE_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def strip_reasoning(text: str) -> str:
@@ -45,9 +44,46 @@ def strip_reasoning(text: str) -> str:
 
 
 def extract_json_object(text: str) -> str | None:
-    """从 LLM 输出中鲁棒提取第一个 JSON 对象（先剥思考块再抽）。"""
-    match = _RE_JSON_OBJECT.search(strip_reasoning(text))
-    return match.group(0).strip() if match else None
+    r"""从 LLM 输出中鲁棒提取第一个**完整**的 JSON 对象。
+
+    先剥思考块与代码围栏，再做**括号深度配对**（感知字符串与转义），
+    而非贪婪 `\{.*\}`。
+
+    为什么不能用贪婪匹配：输出被 max_tokens 截断、或模型吐了未闭合的
+    `<think>` 时，贪婪匹配会从第一个 `{` 一直取到最后一个 `}`，
+    跨度里混入非 JSON 内容，解析必失败（实测 E2E 出现过
+    `Expecting ',' delimiter: char 257`）。深度配对只认真正闭合的那一段，
+    截断时返回 None，由调用方走重试——这比交出一段坏 JSON 更容易诊断。
+    """
+    cleaned = strip_reasoning(text)
+    start = cleaned.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return cleaned[start : i + 1]
+
+    # 括号未闭合（多为输出被截断）→ 返回 None，交给重试
+    return None
 
 
 class LLMTaskType(StrEnum):

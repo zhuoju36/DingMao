@@ -50,21 +50,44 @@ logger = logging.getLogger(__name__)
 # 表内每个词都用 3750 条真实强条 / 13461 条法条验证过命中数，0 命中的已剔除。
 
 # 法条检索术语（合同法 / 建设工程合同争议词汇）
-LAW_TERMS: tuple[str, ...] = (
-    # 主体
-    "建设工程", "承包人", "发包人", "施工人", "监理", "分包", "转包",
-    # 合同与变更
-    "施工合同", "工程范围", "变更", "签证", "书面", "约定", "补充协议",
-    # 工期
-    "工期", "顺延", "竣工", "开工", "停建", "缓建", "延误",
-    # 价款与索赔
-    "价款", "工程款", "结算", "支付", "催告", "拖欠", "利息", "索赔",
-    "违约金", "损失", "赔偿", "折价补偿",
-    # 质量
-    "质量", "验收", "返工", "修理", "改建", "隐蔽", "材料", "设备",
-    # 其他
+#
+# 分两组：**锚点词**与**通用词**。
+#
+# 为什么必须分：实测「变更/书面/约定」这类通用合同词会让《旅游法》《土地管理法》
+# 误命中——旅游法第六十九条写「不得擅自变更…订立书面委托合同，约定双方的权利和义务」，
+# 土地管理法第六十三条写「应当签订书面合同…约定」，各自凑够 3 个通用词命中，
+# 却与建设工程毫无关系。因此除重叠度阈值外，**候选条文本身还必须含至少一个锚点词**。
+#
+# 锚点词**只作为排序权重，不做硬过滤**（实测：一旦硬过滤，《民法典》合同编总则
+# 里关于「合同变更须协商一致」「书面形式」的条文会被全部挡掉——而"口头指令变更"
+# 这类程序争议恰恰要靠总则条文，导致该场景 🟨 恒为空）。有了 IDF 打分后，
+# 工程条文本身就会排到前面，门控已无必要。
+#
+# 锚点词怎么选：中文 ILIKE 没有词边界，`工期` 会命中「动**工期**限」这种巧合子串。
+# 因此对每个候选词统计它在 13461 条法条里命中的法律分布，只保留**领域纯度 ≥ 60%**
+# （命中集中在建设工程相关法律）的词。实测被淘汰的：
+#   索赔 20%、价款 10%、结算 17%、开工 33%、修理 33%、改建 30%、签证 0%、延误 14%、
+#   工期 57%（正是「动工期限」误命中的来源）
+_LAW_ANCHOR_TERMS: tuple[str, ...] = (
+    # 主体（纯度 100%）
+    "承包人", "发包人", "施工人", "监理人", "勘察",
+    # 合同（纯度 100% / 75%）
+    "建设工程", "设计文件", "施工图纸", "分包", "转包",
+    # 价款（纯度 100%）
+    "工程款", "工程价款", "工程造价",
+    # 质量与工期（纯度 100% / 75%）
+    "隐蔽工程", "竣工验收", "返工", "顺延", "停建", "缓建", "工程质量",
+)
+
+_LAW_GENERIC_TERMS: tuple[str, ...] = (
+    "变更", "书面", "约定", "补充协议", "施工合同", "工程范围",
+    "支付", "催告", "拖欠", "利息", "损失", "赔偿", "违约金", "延误",
+    "工期", "竣工", "价款", "结算", "索赔",
+    "质量", "验收", "材料", "设备",
     "解除", "无效", "设计", "图纸", "标准",
 )
+
+LAW_TERMS: tuple[str, ...] = _LAW_ANCHOR_TERMS + _LAW_GENERIC_TERMS
 
 # 强条检索术语（建设工程技术规范词汇）
 #
@@ -92,7 +115,7 @@ STANDARD_TERMS: tuple[str, ...] = (
 DOMAIN_TERMS: tuple[str, ...] = LAW_TERMS
 
 # 每次检索返回的候选上限（注入 prompt 的量，太多会稀释 LLM 注意力）
-_LAW_CANDIDATE_LIMIT = 8
+_LAW_CANDIDATE_LIMIT = 10
 _STANDARD_CANDIDATE_LIMIT = 6
 
 # 重叠度下限。分开设定：技术名词比合同法通用词更具区分度，
@@ -231,8 +254,23 @@ def build_terms(context: str, vocabulary: tuple[str, ...]) -> list[str]:
     return [t for t in vocabulary if t in context]
 
 
+# IDF 加权：越稀有的词权重越高。
+#
+# 为什么需要：纯计数（overlap）分辨率太低，大量条文打平。实测「拖欠工程款」场景里
+# 《民法典》第807条（催告付款，正是该争议的核心条款）与第788/798/803/800条同为
+# overlap=4，只能靠 length ASC 破平，被挤到第 7 位。而「催告」「拖欠」这类词的
+# 文档频率远低于「支付」「约定」，本应更能定位——IDF 正是为此而生。
 _SQL_LAWS = text("""
-    WITH terms(t) AS (SELECT unnest(CAST(:terms AS text[])))
+    WITH terms(t)   AS MATERIALIZED (SELECT unnest(CAST(:terms AS text[]))),
+         anchors(t) AS MATERIALIZED (SELECT unnest(CAST(:anchors AS text[]))),
+         df AS MATERIALIZED (
+             SELECT t,
+                    GREATEST(
+                        (SELECT count(*) FROM law_articles a2
+                          WHERE a2.content LIKE '%' || t || '%'), 1
+                    ) AS n
+             FROM terms
+         )
     SELECT a.id            AS article_id,
            l.code          AS law_code,
            l.name          AS law_name,
@@ -240,16 +278,27 @@ _SQL_LAWS = text("""
            l.version       AS version,
            l.effective_date AS effective_date,
            a.content       AS content,
-           (SELECT count(*) FROM terms WHERE a.content LIKE '%' || terms.t || '%') AS overlap
+           (SELECT count(*) FROM terms   WHERE a.content LIKE '%' || terms.t   || '%') AS overlap,
+           (SELECT count(*) FROM anchors WHERE a.content LIKE '%' || anchors.t || '%') AS anchor_overlap,
+           (SELECT COALESCE(sum(1.0 / ln(2.0 + df.n)), 0)
+              FROM df WHERE a.content LIKE '%' || df.t || '%') AS score
     FROM law_articles a
     JOIN laws l ON l.id = a.law_id
     WHERE l.status = 'active'
-    ORDER BY overlap DESC, length(a.content) ASC
+    ORDER BY score DESC, anchor_overlap DESC, length(a.content) ASC
     LIMIT :limit
 """)
 
 _SQL_STANDARDS = text("""
-    WITH terms(t) AS (SELECT unnest(CAST(:terms AS text[])))
+    WITH terms(t) AS MATERIALIZED (SELECT unnest(CAST(:terms AS text[]))),
+         df AS MATERIALIZED (
+             SELECT t,
+                    GREATEST(
+                        (SELECT count(*) FROM standard_clauses c2
+                          WHERE c2.content LIKE '%' || t || '%'), 1
+                    ) AS n
+             FROM terms
+         )
     SELECT c.id               AS clause_id,
            s.code             AS standard_code,
            s.name             AS standard_name,
@@ -258,11 +307,13 @@ _SQL_STANDARDS = text("""
            s.effective_date   AS effective_date,
            c.is_mandatory     AS is_mandatory,
            c.content          AS content,
-           (SELECT count(*) FROM terms WHERE c.content LIKE '%' || terms.t || '%') AS overlap
+           (SELECT count(*) FROM terms WHERE c.content LIKE '%' || terms.t || '%') AS overlap,
+           (SELECT COALESCE(sum(1.0 / ln(2.0 + df.n)), 0)
+              FROM df WHERE c.content LIKE '%' || df.t || '%') AS score
     FROM standard_clauses c
     JOIN standards s ON s.id = c.standard_id
     WHERE s.status = 'active'
-    ORDER BY overlap DESC, length(c.content) ASC
+    ORDER BY score DESC, length(c.content) ASC
     LIMIT :limit
 """)
 
@@ -271,6 +322,7 @@ async def retrieve_candidates(
     db: AsyncSession,
     context: str,
     *,
+    extra_terms: list[str] | None = None,
     law_limit: int = _LAW_CANDIDATE_LIMIT,
     standard_limit: int = _STANDARD_CANDIDATE_LIMIT,
 ) -> EvidenceCandidates:
@@ -279,6 +331,10 @@ async def retrieve_candidates(
     Args:
         db: 会话
         context: 案情文本（facts + 用户输入拼接）
+        extra_terms: 查询扩展词（见 `expand_search_terms`）。
+            案情是口语（"索赔""工期顺延"），法条是法言法语（"赔偿损失""顺延工程日期"），
+            仅靠案情自身用词做子串匹配召回极低——实测主场景 0 条候选。
+            扩展词把口语映射到法条词汇，是召回的关键。只接受受控词表内的词。
         law_limit: 法条候选上限
         standard_limit: 强条候选上限
 
@@ -288,6 +344,20 @@ async def retrieve_candidates(
     """
     law_terms = build_terms(context, LAW_TERMS)
     std_terms = build_terms(context, STANDARD_TERMS)
+    # 锚点集用**完整**锚点表，不按案情过滤：锚点门控要回答的是
+    # "这条候选是不是在讲建设工程"，这与案情里有没有出现该词无关。
+    # 若按案情过滤，案情没提「分包」时《民法典》第791条（分包）就永远进不了候选。
+    law_anchors = list(_LAW_ANCHOR_TERMS)
+
+    # 扩展词必须落在受控词表内，否则会产出"工程变更"这类法条原文里查不到的词
+    if extra_terms:
+        allowed_law = set(LAW_TERMS)
+        allowed_std = set(STANDARD_TERMS)
+        for t in extra_terms:
+            if t in allowed_law and t not in law_terms:
+                law_terms.append(t)
+            if t in allowed_std and t not in std_terms:
+                std_terms.append(t)
 
     if not law_terms and not std_terms:
         logger.info("证据检索：案情中未命中任何领域术语，跳过检索")
@@ -301,7 +371,14 @@ async def retrieve_candidates(
     if law_terms:
         try:
             rows = (
-                await db.execute(_SQL_LAWS, {"terms": law_terms, "limit": law_limit})
+                await db.execute(
+                    _SQL_LAWS,
+                    {
+                        "terms": law_terms,
+                        "anchors": law_anchors,
+                        "limit": law_limit,
+                    },
+                )
             ).mappings()
             for i, r in enumerate(rows, start=1):
                 if r["overlap"] < _MIN_OVERLAP_LAW:
