@@ -291,6 +291,39 @@ async def chat_turn(
         last_messages=all_messages + [user_msg, assistant_msg],
     )
 
+    # 7. 状态机迁移（W3-W8 第 1 轮 P0-5 修复 + 第 1 轮 §2.2 触发表）
+    # - init → collecting_facts：用户首条消息触发
+    # - collecting_facts → awaiting_confirm：信息充分时迁移
+    # - 合同审查场景保留现有简化逻辑（ready_to_report 字段）
+    from app.core.consultation_state import (
+        ConsultationStep,
+        can_transition,
+        is_facts_sufficient,
+    )
+
+    if consultation_full.scenario == "variation":
+        all_facts_now = list(consultation_full.facts) + [
+            # 本轮新抽取的 fact（未持久化前的内存对象）
+            type("Fact", (), {"fact_key": label})()  # noqa: SLF001
+            for label in new_fact_labels
+        ]
+        current_step = consultation_full.current_step or ConsultationStep.INIT.value
+        # 迁移 1: init → collecting_facts（用户首条消息）
+        if (
+            current_step == ConsultationStep.INIT.value
+            and can_transition(current_step, ConsultationStep.COLLECTING_FACTS.value)
+        ):
+            consultation_full.current_step = ConsultationStep.COLLECTING_FACTS.value
+            current_step = ConsultationStep.COLLECTING_FACTS.value
+        # 迁移 2: collecting_facts → awaiting_confirm（信息充分）
+        if (
+            current_step == ConsultationStep.COLLECTING_FACTS.value
+            and is_facts_sufficient(consultation_full.scenario, all_facts_now)
+            and can_transition(current_step, ConsultationStep.AWAITING_CONFIRM.value)
+        ):
+            consultation_full.current_step = ConsultationStep.AWAITING_CONFIRM.value
+            ready = True  # 让前端 UI 出现"确认生成"按钮
+
     return {
         "user_message_id": user_msg.id,
         "assistant_message_id": assistant_msg.id,

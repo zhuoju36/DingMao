@@ -38,6 +38,10 @@ knowledge-base/laws/dengcao-source/
 # 31 本住建部强标 PDF - 体积大（200+ MB），源数据可重新下载
 knowledge-base/standards/mohurd-source/
 
+# MinerU 解析产物（7.7 MB）—— 重建可重复
+# （experiments/mineru-test/scripts/batch_run.py），按"知识库与代码解耦"原则不入库
+knowledge-base/standards/parsed/
+
 # LLM 模型权重（不本地跑模型，但防止误 commit）
 *.gguf
 *.bin

@@ -8,7 +8,13 @@ from app.models.base import Base, TimestampMixin
 
 
 class Law(Base, TimestampMixin):
-    """法律法规。"""
+    """法律法规。
+
+    W3-W8 第 3 轮 P0-1 / P0-3 修复（2026-09-18）：
+    - version：法律版本/颁布年份（如 "2020"），由知识库导入脚本入库
+    - aliases：同义词/缩写/英文名（如 ["民法典", "中华人民共和国民法典", "MFC"]），
+              EvidenceLinker 匹配时遍历 aliases + code + name 解决 LLM 输出命名差异
+    """
 
     __tablename__ = "laws"
 
@@ -21,6 +27,15 @@ class Law(Base, TimestampMixin):
     # civil / construction / bidding / safety / administrative
 
     issuing_org: Mapped[str | None] = mapped_column(String(200))
+
+    # ====== W3-W8 第 3 轮增量 ======
+    version: Mapped[str | None] = mapped_column(String(20))
+    # 法律版本/颁布年份。P0-3 修复：严禁在 alembic migration 硬编码 UPDATE；
+    # version 必须在 knowledge-base/scripts/import_laws.py 跟法条一同入库。
+    aliases: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
+    # 同义词/缩写/英文名。EvidenceLinker 用此字段做 LLM 输出归一化匹配（P0-1 修复）。
+    # ====== /W3-W8 第 3 轮增量 ======
+
     effective_date: Mapped["str | None"] = mapped_column(String(10))  # YYYY-MM-DD
     status: Mapped[str] = mapped_column(String(20), default="active")  # active/replaced/abolished
     replaced_by: Mapped[str | None] = mapped_column(String(64))
