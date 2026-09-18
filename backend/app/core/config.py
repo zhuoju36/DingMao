@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     cos_region: str = "ap-guangzhou"
     cos_bucket: str = "dingmao-files-dev"
 
+    # ====== 文件存储（P0-7-A）======
+    # MVP 只用本地存储，V2 加 COS
+    # 相对 cwd 的路径：本地 backend/ 下 = "storage"，Docker /app 下 = "storage"
+    storage_root: str = "storage"
+
     # ====== JWT ======
     jwt_secret_key: str = Field(min_length=16)
     jwt_algorithm: str = "HS256"

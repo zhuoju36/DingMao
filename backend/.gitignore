@@ -28,3 +28,6 @@ build/
 data/
 *.db
 *.sqlite
+
+# P0-7-A：用户上传的文件（不进 git，重建可重复）
+storage/

@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.v1 import auth, consultations, health, knowledge, projects
+from app.api.v1 import auth, consultations, documents, health, knowledge, projects
 from app.core.config import settings
 from app.core.exceptions import AppError
 
@@ -65,6 +65,7 @@ async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
+app.include_router(documents.router, prefix="/api/v1")
 app.include_router(consultations.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
 

@@ -155,4 +155,6 @@ def _to_response(p: Project) -> ProjectResponse:
         role=p.role,
         contract_text=clauses.get("contract_text"),
         contract_clauses=p.contract_clauses,
+        created_at=p.created_at,
+        updated_at=p.updated_at,
     )
