@@ -1,4 +1,4 @@
-// 项目档案 API（P0-7-A 最小切片）
+// 项目档案 API（P0-7-A 上传 / P0-7-B 解析）
 import apiClient from "./index"
 
 // 与后端 app/schemas/document.py 对齐
@@ -33,6 +33,17 @@ export interface DocumentResponse {
   storage_provider: StorageProvider
   parse_status: ParseStatus
   parse_error: string | null
+  // 解析产物：只内联 markdown；middle.json / images/ 见 parsed_dir
+  parsed_content: {
+    markdown: string | null
+    page_count: number
+    markdown_chars: number
+    middle_json_bytes: number
+    images: number
+    elapsed_sec: number
+    tier: string
+    parsed_dir: string
+  } | null
   created_at: string
   updated_at: string
 }
@@ -86,7 +97,7 @@ export async function listDocuments(
   return r.items
 }
 
-/** 档案详情。 */
+/** 档案详情（含解析产物）。 */
 export async function getDocument(
   projectId: number,
   documentId: number
@@ -94,4 +105,30 @@ export async function getDocument(
   return apiClient.get<DocumentResponse>(
     `/projects/${projectId}/documents/${documentId}`
   )
+}
+
+export interface ReparseResponse {
+  document_id: number
+  parse_status: ParseStatus
+  /** false = 已在队列中，或任务队列不可用 */
+  queued: boolean
+  message: string
+}
+
+/** 重新解析（清空旧产物 → 重新入队）。 */
+export async function reparseDocument(
+  projectId: number,
+  documentId: number
+): Promise<ReparseResponse> {
+  return apiClient.post<ReparseResponse>(
+    `/projects/${projectId}/documents/${documentId}/reparse`
+  )
+}
+
+/** 删除档案（DB 行 + 源文件 + 解析产物）。 */
+export async function deleteDocument(
+  projectId: number,
+  documentId: number
+): Promise<void> {
+  await apiClient.delete<void>(`/projects/${projectId}/documents/${documentId}`)
 }

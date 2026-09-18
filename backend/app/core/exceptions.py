@@ -58,6 +58,13 @@ class DocumentParseError(AppError):
     status_code = 422
 
 
+class DocumentValidationError(AppError):
+    """文档校验失败（如文件过大、类型不支持）。"""
+
+    code = "document_validation_error"
+    status_code = 422
+
+
 # ====== 认证相关 ======
 class AuthError(AppError):
     code = "auth_error"

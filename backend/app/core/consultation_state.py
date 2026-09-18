@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from app.core.constants import VARIATION_REQUIRED_FACT_KEYS
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from app.models.consultation import ConsultationFact
 
 
-class ConsultationStep(str, Enum):
+class ConsultationStep(StrEnum):
     """6 节点状态机枚举。"""
 
     INIT = "init"

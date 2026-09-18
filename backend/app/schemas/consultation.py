@@ -1,12 +1,11 @@
 """问诊相关 Pydantic schemas。"""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.models.consultation import ConsultationScenario
-
 
 # ===== W3-W8 第 3 轮 EvidenceLinker 修复后（P2-2）：定义具体三源证据结构 =====
 

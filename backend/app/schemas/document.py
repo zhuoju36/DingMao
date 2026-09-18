@@ -1,33 +1,31 @@
 """项目档案 Pydantic schemas。
 
-P0-7-A（最小切片）：
-- 上传文件（multipart）→ 存本地 → 写 DB（status=pending，不解析）
-- 列表 / 详情查询
-
-P0-7-B 后续（MinerU 异步解析）：parsed_content / parse_error 等字段填充。
+P0-7-A：上传 / 列表 / 详情
+P0-7-B：解析状态机（pending → parsing → parsed / failed_parse）+ 重解析 + 删除
 """
-from datetime import datetime
-from typing import Literal
 
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel
 
 from app.models.document import DocumentType
 
 # 解析状态枚举（P0-7-A：先有骨架，P0-7-B 填充真实解析结果）
 ParseStatus = Literal[
-    "pending",         # 已上传，待解析
-    "parsing",         # 正在解析（P0-7-B）
-    "parsed",          # 解析成功（P0-7-B）
-    "failed_upload",   # 上传失败
-    "failed_parse",    # 解析失败（P0-7-B）
-    "archived",        # 已归档（V2）
+    "pending",  # 已上传，待解析
+    "parsing",  # 正在解析（P0-7-B）
+    "parsed",  # 解析成功（P0-7-B）
+    "failed_upload",  # 上传失败
+    "failed_parse",  # 解析失败（P0-7-B）
+    "archived",  # 已归档（V2）
 ]
 
 StorageProvider = Literal["local", "cos"]  # P0-7-A 只用 local
 
 
 class DocumentResponse(BaseModel):
-    """项目档案响应。"""
+    """项目档案响应（详情含 parsed_content）。"""
 
     id: int
     project_id: int
@@ -45,10 +43,25 @@ class DocumentResponse(BaseModel):
     parse_status: ParseStatus
     parse_error: str | None
 
+    # 解析产物（P0-7-B）。
+    # 说明：只内联 markdown（供 LLM/检索）；middle.json / images/ 留盘，
+    # 目录见 parsed_content["parsed_dir"]（相对 storage_root）。
+    # 理由：middle.json 单文件可达数百 KB，内联进 JSONB 会明显膨胀 DB。
+    parsed_content: dict[str, Any] | None = None
+
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ReparseResponse(BaseModel):
+    """重新解析响应。"""
+
+    document_id: int
+    parse_status: ParseStatus
+    queued: bool  # False = 已在队列中，或任务队列不可用
+    message: str
 
 
 class DocumentListResponse(BaseModel):

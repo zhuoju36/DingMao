@@ -7,6 +7,7 @@ P0-7-A：MVP 只用本地存储（V2 加 COS）。
 - 文件名带 doc_id 避免冲突
 - 不入库文件内容，只入库路径
 """
+
 from __future__ import annotations
 
 import shutil
@@ -19,8 +20,8 @@ MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
 
 def get_storage_root() -> Path:
-    """存储根目录。"""
-    return Path(settings.storage_root)
+    """存储根目录（解析为绝对路径，不依赖 cwd）。"""
+    return settings.resolve_path(settings.storage_root)
 
 
 def _safe_extension(file_name: str) -> str:
@@ -57,9 +58,7 @@ def save_file(
 
     file_size = source_path.stat().st_size
     if file_size > MAX_FILE_SIZE_BYTES:
-        raise ValueError(
-            f"文件超过 {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB 限制"
-        )
+        raise ValueError(f"文件超过 {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB 限制")
 
     # 目标路径：backend/storage/projects/{project_id}/{document_id}{ext}
     project_dir = get_storage_root() / "projects" / str(project_id)

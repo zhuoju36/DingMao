@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1 import auth, consultations, documents, health, knowledge, projects
 from app.core.config import settings
 from app.core.exceptions import AppError
+from app.services.task_queue import close_pool
 
 
 @asynccontextmanager
@@ -26,7 +27,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期。MVP 暂不做复杂初始化。"""
     # 启动事件
     yield
-    # 关闭事件
+    # 关闭事件：释放 ARQ 连接池（若从未入队，则是 no-op）
+    await close_pool()
 
 
 app = FastAPI(

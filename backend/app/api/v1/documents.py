@@ -1,25 +1,26 @@
-"""项目档案路由（P0-7-A 最小切片）。
+"""项目档案路由（P0-7-A 上传 / P0-7-B 解析）。
 
-P0-7-A 包含：
-- POST   /api/v1/projects/{project_id}/documents        上传文件（不解析，状态=pending）
-- GET    /api/v1/projects/{project_id}/documents        列项目档案
-- GET    /api/v1/projects/{project_id}/documents/{id}   详情
+端点：
+- POST   /api/v1/projects/{project_id}/documents              上传（自动入队解析）
+- GET    /api/v1/projects/{project_id}/documents              列项目档案
+- GET    /api/v1/projects/{project_id}/documents/{id}         详情
+- POST   /api/v1/projects/{project_id}/documents/{id}/reparse 重新解析
+- DELETE /api/v1/projects/{project_id}/documents/{id}         删除（含文件 + 解析产物）
 
-P0-7-B 后续：
-- POST /reparse（MinerU 异步任务）
-- DELETE /{id}（v2）
+解析流水线见 app/worker.py；状态机见 docs/product/upload-flow.md §五。
 """
+
 import shutil
 import tempfile
-from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import cast
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import DocumentValidationError, PermissionDeniedError
 from app.models.base import get_db
 from app.models.document import DocumentType, ProjectDocument
 from app.models.project import Project
@@ -28,15 +29,15 @@ from app.schemas.document import (
     DocumentListResponse,
     DocumentResponse,
     DocumentUploadResponse,
+    ParseStatus,
+    ReparseResponse,
 )
-from app.services import storage
+from app.services import ingest, storage, task_queue
 
 router = APIRouter(prefix="/projects/{project_id}/documents", tags=["documents"])
 
 
-async def _get_owned_project(
-    db: AsyncSession, project_id: int, user: User
-) -> Project:
+async def _get_owned_project(db: AsyncSession, project_id: int, user: User) -> Project:
     """获取项目（要求当前用户是 owner）。"""
     project = await db.get(Project, project_id)
     if project is None:
@@ -44,6 +45,17 @@ async def _get_owned_project(
     if project.owner_id != user.id:
         raise PermissionDeniedError("无权访问该项目")
     return project
+
+
+async def _get_owned_document(
+    db: AsyncSession, project_id: int, document_id: int, user: User
+) -> ProjectDocument:
+    """获取项目下的档案（同时校验项目归属）。"""
+    await _get_owned_project(db, project_id, user)
+    doc = await db.get(ProjectDocument, document_id)
+    if doc is None or doc.project_id != project_id:
+        raise PermissionDeniedError(f"档案不存在: {document_id}")
+    return doc
 
 
 @router.post(
@@ -59,16 +71,15 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DocumentUploadResponse:
-    """上传文件到项目档案（P0-7-A）。
+    """上传文件到项目档案，并自动入队 MinerU 解析任务。
 
-    P0-7-A 不解析文件：写入 DB 后状态=pending，等 P0-7-B 异步任务处理。
+    返回时 parse_status=pending；解析在 ARQ worker 中异步执行
+    （见 app/worker.py）。队列不可用时仍返回 201，用户可稍后点「重新解析」。
     """
     await _get_owned_project(db, project_id, user)
 
     # 1. 保存到临时文件（UploadFile 一次读完 → tmp）
-    with tempfile.NamedTemporaryFile(
-        delete=False, suffix=Path(file.filename or "").suffix
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "").suffix) as tmp:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = Path(tmp.name)
 
@@ -98,10 +109,10 @@ async def upload_document(
                 source_path=tmp_path,
             )
         except ValueError as e:
-            # 文件过大
-            db.delete(doc)
+            # 文件过大等校验失败：回滚插入，避免残留指向不存在文件的孤儿行
+            await db.delete(doc)
             await db.commit()
-            raise PermissionDeniedError(str(e))
+            raise DocumentValidationError(str(e)) from e
 
         # 4. 更新存储路径 + 大小
         doc.storage_path = rel_path
@@ -109,19 +120,11 @@ async def upload_document(
         await db.commit()
         await db.refresh(doc)
 
-        return DocumentUploadResponse(
-            id=doc.id,
-            project_id=doc.project_id,
-            document_type=doc.document_type,
-            title=doc.title,
-            file_name=doc.file_name,
-            file_size=doc.file_size,
-            mime_type=doc.mime_type,
-            storage_path=doc.storage_path,
-            storage_provider=doc.storage_provider,
-            parse_status=doc.parse_status,
-            created_at=doc.created_at,
-        )
+        # 5. 入队解析（best-effort：失败不影响上传成功）
+        await task_queue.enqueue_parse_document(doc.id)
+
+        # ORM 的 str 列 → Pydantic 的 Literal/Enum 字段由 model_validate 做运行时校验
+        return DocumentUploadResponse.model_validate(doc)
     finally:
         # 清理临时文件（如果 save_file 失败或没移到正式位置）
         if tmp_path.exists():
@@ -156,10 +159,62 @@ async def get_document(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DocumentResponse:
-    """档案详情。"""
-    await _get_owned_project(db, project_id, user)
-
-    doc = await db.get(ProjectDocument, document_id)
-    if doc is None or doc.project_id != project_id:
-        raise PermissionDeniedError(f"档案不存在: {document_id}")
+    """档案详情（含 parsed_content：Markdown 正文 + 解析元信息）。"""
+    doc = await _get_owned_document(db, project_id, document_id, user)
     return DocumentResponse.model_validate(doc)
+
+
+@router.post("/{document_id}/reparse", response_model=ReparseResponse)
+async def reparse_document(
+    project_id: int,
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ReparseResponse:
+    """重新解析：清空解析结果 → 重置 pending → 重新入队。
+
+    用于：解析失败后重试、换 MinerU 档位后重跑、文件被替换后续解析。
+    """
+    doc = await _get_owned_document(db, project_id, document_id, user)
+
+    # 源文件必须还在（避免入队后才失败，白跑一趟）
+    if not storage.file_exists(doc.storage_path):
+        raise DocumentValidationError(f"源文件已丢失，无法重新解析: {doc.storage_path}")
+
+    doc.parse_status = "pending"
+    doc.parse_error = None
+    doc.parsed_content = None
+    await db.commit()
+
+    queued = await task_queue.enqueue_parse_document(doc.id)
+    return ReparseResponse(
+        document_id=doc.id,
+        parse_status=cast(ParseStatus, doc.parse_status),
+        queued=queued,
+        message=(
+            "已重新入队解析"
+            if queued
+            else "解析任务已在队列中，或任务队列不可用（请检查 Redis 与 worker）"
+        ),
+    )
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    project_id: int,
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    """删除档案：DB 行 + 源文件 + 解析产物。
+
+    注意：已生成的结论/文书中对该档案的引用不会回滚（MVP 接受）。
+    """
+    doc = await _get_owned_document(db, project_id, document_id, user)
+
+    # 先删文件，再删 DB 行。文件删失败不阻断（避免残留 DB 行指向已丢失的文件更糟）
+    storage.delete_file(doc.storage_path)
+    ingest.delete_parsed_output(doc.project_id, doc.id)
+
+    await db.delete(doc)
+    await db.commit()

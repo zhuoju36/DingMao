@@ -1,5 +1,7 @@
 """项目路由：W1 极简 CRUD。"""
 
+from typing import cast
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +12,7 @@ from app.core.exceptions import PermissionDeniedError
 from app.models.base import get_db
 from app.models.consultation import Consultation
 from app.models.project import Project
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.consultation import ConsultationListResponse
 from app.schemas.project import (
     ProjectCreate,
@@ -152,7 +154,7 @@ def _to_response(p: Project) -> ProjectResponse:
         design_org=p.design_org,
         supervisor_org=p.supervisor_org,
         contractor_org=p.contractor_org,
-        role=p.role,
+        role=cast(UserRole, p.role),
         contract_text=clauses.get("contract_text"),
         contract_clauses=p.contract_clauses,
         created_at=p.created_at,

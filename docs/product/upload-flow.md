@@ -83,15 +83,17 @@ MVP 仅 2 个 P0 场景可用，但档案 Tab 始终可见（V2 通用知识库�
 | `failed_parse` | 红 | ⚠️ | 解析失败 |
 | `archived` | 灰 | 📦 | 已归档 |
 
-## 六、API 设计（草案）
+## 六、API 设计（✅ 已实现，2026-09-18）
 
-| 端点 | 方法 | 用途 |
-|---|---|---|
-| `/api/v1/projects/:id/documents` | GET | 列项目档案 |
-| `/api/v1/projects/:id/documents` | POST | 上传文件（multipart/form-data）|
-| `/api/v1/projects/:id/documents/:doc_id` | GET | 详情（含 Markdown/MiddleJson）|
-| `/api/v1/projects/:id/documents/:doc_id` | DELETE | 删除（仅上传者本人 / 项目所有者）|
-| `/api/v1/projects/:id/documents/:doc_id/reparse` | POST | 重解析 |
+| 端点 | 方法 | 用途 | 实现状态 |
+|---|---|---|---|
+| `/api/v1/projects/:id/documents` | GET | 列项目档案 | ✅ P0-7-A |
+| `/api/v1/projects/:id/documents` | POST | 上传文件（multipart/form-data）| ✅ P0-7-A + 自动入队解析 |
+| `/api/v1/projects/:id/documents/:doc_id` | GET | 详情（含 `parsed_content`）| ✅ P0-7-A |
+| `/api/v1/projects/:id/documents/:doc_id` | DELETE | 删除（DB + 源文件 + 解析产物）| ✅ P0-7-B |
+| `/api/v1/projects/:id/documents/:doc_id/reparse` | POST | 重解析（清产物 → 重置 pending → 入队）| ✅ P0-7-B |
+
+实现位置：`backend/app/api/v1/documents.py`
 
 ### 6.1 POST 字段
 
@@ -101,26 +103,64 @@ document_type:  enum    （必填，6 选 1）
 title:          string  （可选，默认取原文件名）
 ```
 
-### 6.2 后端流程（ARQ 异步任务）
+### 6.2 后端流程（✅ 已实现）
 
 ```
-1. POST /documents
-   - 鉴权：项目成员权限（按角色反转决策 §6 第 9 条）
-   - 校验文件类型 / 大小
-   - 计算 sha256（去重）
-   - 写 project_documents 表（status=pending）
-   - 落 COS / 本地
-   - 入队 ARQ 任务 → 立即返回 201 + document_id
+1. POST /documents                        [app/api/v1/documents.py]
+   - 鉴权：项目 owner（MVP 单用户；成员权限待 V2 ProjectMember）
+   - 校验文件大小（>50MB → 422 DocumentValidationError）
+   - 落本地 storage/projects/{project_id}/{doc_id}{ext}
+   - 写 project_documents（parse_status=pending）
+   - task_queue.enqueue_parse_document()  ← best-effort，队列挂了也返回 201
+   - 返回 201 + document_id
 
-2. 后台任务 worker
-   - 调 MinerU parse（按 document-ingestion.md 薄封装）
-   - 状态: pending → parsing → parsed
-   - 失败: parsing → failed_parse，error 字段写日志
-   - 写 project_documents.parsed_content = {markdown, middle_json}
+2. ARQ worker（独立进程）                  [app/worker.py]
+   - 启动: cd backend && .venv/bin/arq app.worker.WorkerSettings
+   - 置 parsing → 调 ingest.parse_document()（subprocess 跑 MinerU）
+   - 成功: parsed   + parsed_content + 产物落盘 storage/parsed/{pid}/{did}/
+   - 失败: failed_parse + parse_error（不抛异常，避免 ARQ 无意义重试）
+   - 文档在排队期间被删 → 静默跳过
 
-3. GET /documents/:doc_id
-   - 返回详情 + 当前状态 + 解析产物 URL（如果 parsed）
+3. POST /documents/:doc_id/reparse
+   - 清 parsed_content / parse_error → 重置 pending → 重新入队
+   - 去重：_job_id="parse:{doc_id}" + keep_result=0
+     （去重窗口 = 排队中+执行中；任务结束后可再次重解析）
+
+4. DELETE /documents/:doc_id
+   - 删源文件 + 删解析产物目录 + 删 DB 行，返回 204
 ```
+
+### 6.3 parsed_content 结构（实现与设计稿的偏差，已确认）
+
+设计稿原写 `{markdown, middle_json}` 全内联。**实际实现只内联 markdown**：
+
+```json
+{
+  "markdown": "……正文……",
+  "page_count": 3,
+  "markdown_chars": 253,
+  "middle_json_bytes": 3958,
+  "images": 0,
+  "elapsed_sec": 3.2,
+  "tier": "flash",
+  "parsed_dir": "parsed/7/2"
+}
+```
+
+**理由**：`middle.json` 单文件可达数百 KB（GB55037 实测 388 KB），逐份内联进 JSONB
+会明显膨胀 DB；而 MVP 喂 LLM 只需要 markdown。完整产物（middle.json / images/ /
+structured_content.json / model_output.json）留在 `storage/parsed/{pid}/{did}/`，
+需要按页定位时再读盘。符合"原则 7 知识库与代码解耦（可重建）"。
+
+### 6.4 MinerU 调用方式（关键架构约束）
+
+MinerU 依赖 **7.3 GB**（torch/onnxruntime + 模型），不装进 backend venv（737 MB）。
+后端通过 **subprocess** 调用「装了 MinerU 的解释器」执行
+`backend/scripts/mineru_parse.py`，解释器路径由 `MINERU_PYTHON` 配置。
+
+- 本地开发：`MINERU_PYTHON=../experiments/mineru-test/.venv/bin/python`
+- 生产部署：需单独准备 mineru venv，填绝对路径（见 `.env.example`）
+- 未配置时：上传仍成功，解析以 `failed_parse` + 明确错误信息失败（不静默跳过）
 
 ## 七、页面布局
 

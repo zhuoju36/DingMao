@@ -3,6 +3,8 @@
 放跨模块共享的固定文本/配置，避免各处硬编码漂移。
 """
 
+from enum import StrEnum
+
 # 免责声明（AGENTS.md 应用原则 4：文书输出前必须显示前置免责声明）
 #
 # 使用位置：
@@ -17,10 +19,8 @@ DISCLAIMER = (
 
 # ===== 变更扯皮场景枚举（W3-W8 第 1 轮设计）=====
 
-from enum import Enum
 
-
-class DisputeType(str, Enum):
+class DisputeType(StrEnum):
     """争议类型。"""
 
     PAYMENT = "payment"          # 付款争议
@@ -30,7 +30,7 @@ class DisputeType(str, Enum):
     OTHER = "other"
 
 
-class DesiredOutcome(str, Enum):
+class DesiredOutcome(StrEnum):
     """期望结果。"""
 
     EXTEND_COMPENSATION = "extend_compensation"   # 延期 + 索赔
@@ -39,7 +39,7 @@ class DesiredOutcome(str, Enum):
     OTHER = "other"
 
 
-class EvidenceType(str, Enum):
+class EvidenceType(StrEnum):
     """证据类型（W3-W8 第 4 轮 P2-4 修复）。
 
     evidence_list JSON 字段中 type 的合法值。
