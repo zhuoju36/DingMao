@@ -90,3 +90,83 @@
 - **理由**: 反映实际工作流；保持单用户单项目约束（V3 才上 ProjectMember）；零额外查询开销（JOIN 已有的 projects 行）
 - **影响/代价**: 注册流程保留角色采集（现在叫"默认角色"）；新建项目表单必选角色；前端 AppLayout 头部角色徽章改为显示默认角色
 - **回退条件**: 若发现 80%+ 用户单一项目单一角色，可考虑重新合并字段（不建议，损失数据）
+
+### 2026-09 | 文档摄入分层：MVP 只做 L1+L2，L3 摘要 V2 启用 + 预留字段
+- **决策**: 项目档案只做 L1（原始文件）+ L2（解析后文本）；L3 摘要以 `summary TEXT?` / `extracted_facts JSONB?` 字段在 ProjectDocument 表预留，**MVP 不写入**；V2 启用时再补抽取 pipeline
+- **背景**: 决策日志 §6 MVP 边界（12 周红线）+ §应用原则 2（LLM 不参与关键数字）；当前合同审查/变更扯皮已可用 MinerU Flash 档解析（详见 [`docs/architecture/document-ingestion.md`](../architecture/document-ingestion.md)）
+- **备选**: (a) MVP 同时做 L3 全文摘要（LLM 调用）；(b) MVP 做 L3 但用 LLM 生成事实卡；(c) MVP 完全不做 L3 也不预留字段
+- **理由**: LLM 摘要增加 MVP 复杂度与成本（违反 §6 红线）；规则抽取的 `extracted_facts` 零成本且符合应用原则 2（关键数字不交给 LLM）；预留字段满足原则 7（架构长远眼光），不"先这样以后再换"
+- **影响/代价**: V2 启用时需写 alembic migration 加列、抽取 pipeline、Pydantic schema/前端类型；`extracted_facts` 必须可重建（删除后可由 `parsed_content` 重新生成，不依赖容器运行时状态）
+- **回退条件**: 无（字段预留是单向可扩展）
+
+### 2026-09 | 用户上传入口：仅项目档案，不进通用知识库
+- **决策**: 用户上传文件 → 仅进项目档案（ProjectDocument），通用知识库仍由项目所有者按 [`docs/domain/knowledge-base.md`](../domain/knowledge-base.md) 规范手动维护
+- **背景**: 决策日志 §6 MVP 知识库范围锁定（50 部核心法规 + 38 本通用规范全文强条，**其他不入库**）
+- **备选**: (a) 用户上传可贡献强条进通用库；(b) 用户上传进 ProjectNote / ProjectClause（V2 设计稿）；(c) MVP 暂不做上传功能
+- **理由**: §6 MVP 红线优先；保持通用库权威性（项目所有者逐条校对入库，质量可控）；MVP 期间上传功能延后至 W3-W8 变更扯皮完成后再做（UX 优先级见 [`docs/product/upload-flow.md`](../product/upload-flow.md) §十）
+- **影响/代价**: 用户上传无法贡献通用库；通用库扩展依赖项目所有者手动入库
+- **回退条件**: V2 评估"用户贡献强条"功能（需先扩展 §6 边界）
+
+### 2026-09 | System Prompt 解耦：代码默认 + 文件覆盖（jinja2）
+- **决策**: PromptStore 三层架构（DB V2+ > 文件 MVP > 代码默认 MVP），用 jinja2 渲染占位符；详见 [`docs/product/w3-w8-llm-prompts.md`](../product/w3-w8-llm-prompts.md) §十
+- **背景**: 运维需要 A/B test、调措辞、加公司免责声明；AGENTS.md 原则 7（架构长远）+ `conventions.md` 第 14 行（常量集中管理）
+- **备选**: (a) 全 `.env`（KV 不适合多行）；(b) 只文件覆盖（部署需拷全套默认）；(c) 数据库（V2 过重）
+- **理由**: 业内共识（LangChain Hub、Anthropic Prompt Library）；代码默认保证开箱可用；文件覆盖给运维自由度；jinja2 项目已有依赖（`pyproject.toml` 第 32 行 `jinja2>=3.1.4`）；`undefined=StrictUndefined` 防静默错误
+- **影响/代价**: `app/core/prompts.py` 新增；`chat.py` 改造调 `prompt_store.render()`；新增 4 个 YAML 文件；与现有 `app/core/constants.py` 并列
+- **回退条件**: 无（向后兼容，未设 `PROMPT_DIR` 时与原 prompt 等价）
+
+### 2026-09 | 三源证据填充：EvidenceLinker 自动挂载 version + effective_date
+- **决策**: LLM 只填 (code, article_no/clause_no)；version / effective_date / is_mandatory 由 EvidenceLinker 从 DB 匹配填充；详见 [`docs/product/w3-w8-triple-evidence.md`](../product/w3-w8-triple-evidence.md)
+- **背景**: 应用原则 1（数据确凿：三源证据必填）+ 应用原则 2（LLM 不生成关键数字）+ 应用原则 3（引用必须有版本号 + 生效日期）；现状 `stream_report` 写 `law_refs=[]` `standard_refs=[]` 永远空数组
+- **备选**: (a) LLM 直接填 version（违反应用原则 2）；(b) 手动让用户填（体验差）；(c) 不填 version（违反应用原则 3）
+- **理由**: EvidenceLinker 纯函数可重建（决策日志 §7 知识库与代码解耦）；防 LLM 幻觉（编造 code/条款号）；匹配快（<50ms）；`Law` 表补 `version` 字段（参考 `Standard.version` 已有先例）
+- **影响/代价**: `Law.version` 加列 + 回填已知法律版本；`search_laws` / `search_standards` 补返回字段；`app/services/evidence_linker.py` 新建；Alembic migration 一条
+- **回退条件**: 无（向后兼容，老数据 `law_refs=[]` 仍可写）
+
+#### 2026-09 修订注记（P0 修复后）
+
+subagent 独立审阅发现初始设计有 3 个红线违反 / silent failure，已在 [`w3-w8-triple-evidence.md`](../product/w3-w8-triple-evidence.md) 修复：
+
+| # | 修复 | 修复前 | 修复后 |
+|---|---|---|---|
+| P0-1 | `Law` 加 `aliases JSONB`；匹配改 aliases + name + code 三级遍历 + article_no 汉字↔阿拉伯归一化 | `hit["law_code"] == raw.get("code")` 字符串相等（LLM 输出"中华人民共和国民法典"与 DB 存"民法典"失配）→ silent failure | 三级匹配 + 归一化层，挂载率恢复 ≥95% |
+| P0-2 | `_validate_risk` 改 raise `EvidenceValidationError` | `missing_law_version` 仅返回 warning（软警告，违反应用原则 3 红线） | 直接 raise 硬错误，由上层决定重试/降级 |
+| P0-3 | `Law.version` 在知识库导入脚本入库（`knowledge-base/scripts/import_laws.py`），alembic migration 只加 nullable 列 | migration 硬编码 `op.execute("UPDATE laws SET version = '2020' WHERE code = '民法典'")` 等 50 行 SQL | migration 只 `op.add_column`；version + aliases 跟法条一同导入（参考 `Standard.version` 已有做法）|
+
+### 2026-09 | 5 类文书：Jinja2 模板 + 哨兵 token 校验 + 并行
+- **决策**: 变更扯皮场景 5 类文书（签证单 / 索赔报告 / 监理通知单 / 工作联系单 / 审查意见备忘录）统一采用以下方案：
+  1. **Jinja2 模板渲染**结构化字段（项目名称 / 当事人 / 金额 / 时间 / 条款号等）
+  2. **LLM 仅做措辞润色**（应用原则 2：关键数字不交给 LLM）
+  3. **哨兵 token 校验**保证结构化字段 100% 保留：渲染时用不可见 token 替换结构化值 → LLM 润色 → 反向恢复（结构性保证，LLM 看不到原值）
+  4. **免责声明固定在文书顶部 + 底部双显**（应用原则 4：律师复核提示放在显眼位置）
+  5. **5 类文书 `asyncio.gather` 并行生成**（25s → 5-8s）
+- 详见 [`docs/product/w3-w8-artifacts.md`](../product/w3-w8-artifacts.md)
+- **背景**: 决策日志 §7（"Jinja2 模板引擎 + LLM 润色，关键数字不交给 LLM"）+ 应用原则 2（LLM 不生成关键数字）+ 应用原则 4（文书前免责声明）；W3-W8 收官决策
+- **备选**:
+  - (a) LLM 端到端生成（违反应用原则 2，幻觉风险）
+  - (b) 模板渲染不润色（文书表达僵硬）
+  - (c) 润色后正则校验结构化字段（正则无法区分"合同金额 100 万"语义数字 vs "第 8 条"叙事数字）
+- **理由**:
+  - 决策日志 §7 已锁定方向
+  - 哨兵 token 是结构性保证（subagent 审阅建议），比正则可靠
+  - 顶部 + 底部双显是应用原则 4 硬要求（原设计违反，subagent 审阅发现）
+  - 并行：LLM 润色是 I/O 密集型，串行浪费
+- **影响/代价**:
+  - `backend/app/services/artifact_renderer.py` 新建（哨兵 token 机制）
+  - `backend/app/templates/artifacts/*.j2` 5 个模板
+  - `backend/app/services/consultation_engine.py` `generate_artifacts` 并行编排
+  - `frontend/package.json` 加 `markdown-it` 依赖
+  - `backend/app/core/constants.py` 加 `EvidenceType` 枚举
+- **回退条件**: 哨兵 token 实测破坏率 > 5%（按应用原则 2 红线绝不妥协）
+
+### 2026-09 | PromptStore 拆 V1/V2（subagent 审阅建议简化）
+- **决策**: PromptStore 拆两阶段落地，详见 [`docs/product/w3-w8-llm-prompts.md`](../product/w3-w8-llm-prompts.md) §十
+  - **V1（MVP）**: 只交付 `DEFAULT_PROMPTS dict + render()` 接口（无文件层、无 DB 层）
+  - **V2（未来）**: 加 YAML 文件覆盖层（`PROMPT_DIR` 环境变量）+ DB 覆盖层（V2+ A/B test）
+- **背景**: 上一条"System Prompt 解耦"决策原设计是三层架构（DB V2+ > 文件 MVP > 代码默认 MVP），但 subagent 独立审阅指出 MVP 阶段三层是过度设计，违反 AGENTS.md 原则 2「最简单实现」
+- **备选**:
+  - (a) 一次性建完整三层（被否，MVP 过重）
+  - (b) 完全不用 PromptStore，V1 直接 `dict.get`（V2 再说）
+- **理由**: 决策日志 §2026-09 "Prompt 解耦"已预留 V2 升级路径，V1 简化不影响未来扩展——`PromptStore` 类内部升级时调用方 `prompt_store.render(key, **vars)` 接口不变
+- **影响/代价**: `app/core/prompts.py` V1 只 30 行（单层）；V2 升级时改 `__init__` 参数即可
+- **回退条件**: V1 落地后实际运营发现需要 A/B 测试，再升级 V2

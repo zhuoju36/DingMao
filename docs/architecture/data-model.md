@@ -120,6 +120,8 @@ Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
 ## 五、ProjectDocument（项目归档文件）
 
 > V1 仅占位（数据模型已建，**W1 暂不实现文件上传**）。所有信息通过用户输入文本 + 知识库检索获得。
+>
+> 2026-09：项目档案上传功能进入路线图（见 [`docs/product/upload-flow.md`](../product/upload-flow.md)）。新增 `summary` / `extracted_facts` 字段为 V2 摘要/事实卡预留，**MVP 不写入**。
 
 ### 字段
 
@@ -135,15 +137,54 @@ Standard (1) ──< StandardClause (N) ──< BehaviorStandardMapping (N)
 | mime_type | str(100) | MIME |
 | storage_path | str(500) | COS 路径 / 本地路径 |
 | storage_provider | str(20) | cos / local |
-| parsed_content | JSONB? | 解析结果 |
+| parsed_content | JSONB? | 解析结果（MinerU Markdown + MiddleJson）|
 | parse_status | str(20) | pending / success / failed |
 | parse_error | str(1000)? | 解析错误信息 |
 | document_date | datetime? | 文档日期 |
 | parties | JSONB? | 涉及的相关方 |
+| **summary** | **TEXT?** | **V2 预留：全文自然语言摘要（MVP 不写入）** |
+| **extracted_facts** | **JSONB?** | **V2 预留：结构化事实卡（金额/时间/双方/关键条款），MVP 不写入** |
 
 ### 关系
 
 - 多对一 → Project
+
+### 设计要点（V2 摘要/事实卡）
+
+按 [`docs/product/upload-flow.md` §三](../product/upload-flow.md) 讨论结论：
+
+| 字段 | 触发 | 来源 | 是否调用 LLM |
+|---|---|---|---|
+| `summary` | V2 启用后，解析完成时 | LLM 全文摘要 | ✅ 是 |
+| `extracted_facts` | V2 启用后，解析完成时 | 规则抽取（正则 + MiddleJson 标题块）| ❌ 否 |
+
+**MVP 阶段两字段均为 NULL**，仅在 schema 层预留。V2 启用时需：
+1. 写 alembic migration 加列（NULL DEFAULT）
+2. 在 `app/services/ingest.py` 解析 pipeline 末尾追加抽取步骤
+3. 更新 Pydantic schema / 前端类型
+
+**关键约束**（决策日志 §1"数据确凿优先" + §应用原则 2）：
+- `extracted_facts` 必须可重建：删除后可由 `parsed_content` 重新生成（不依赖容器状态）
+- `extracted_facts` 不允许包含 LLM 推断的金额/时间/条款号（仅规则抽取）
+
+### 预留字段的 `extracted_facts` schema（草案，待 V2 实装时确认）
+
+```json
+{
+  "contract_amount": "1.28亿",
+  "sign_date": "2026-03-15",
+  "effective_date": "2026-04-01",
+  "parties": [
+    {"role": "owner", "name": "XX 房地产开发公司"},
+    {"role": "contractor", "name": "YY 建设集团"}
+  ],
+  "key_clauses": [
+    {"clause_no": "8.1", "summary": "付款方式: 进度款", "page_idx": 5}
+  ],
+  "extracted_at": "2026-09-18T15:30:00Z",
+  "extracted_from_pages": [3, 5, 7]
+}
+```
 
 ---
 
@@ -382,7 +423,7 @@ LLM 上下文 = 通用知识 + 项目特有知识
 |---|---|---|---|
 | User / Project / Consultation / Fact / Conclusion / Artifact | ✅ | | |
 | Law / LawArticle / Standard / StandardClause / BehaviorStandardMapping | ✅ 表结构<br>已下载 31 本 PDF | 待入库数据 | |
-| ProjectDocument | ✅ 表结构 | | |
+| ProjectDocument | ✅ 表结构<br>已加 `summary` / `extracted_facts` 字段预留（V2 启用）| 上传 pipeline + MinerU 接入（详见 [`docs/product/upload-flow.md`](../product/upload-flow.md)）| 摘要 / 事实卡 |
 | ProjectNote | 仅设计 | | V2 实现 |
 | ProjectClause | 仅设计 | | V2 实现 |
 | 检索逻辑（混合通用 + 项目） | | | V2 实现 |
@@ -408,3 +449,4 @@ LLM 上下文 = 通用知识 + 项目特有知识
 | 2026-05 | 初版（W1 阶段） |
 | 2026-05 | 新增"项目特有知识层"V2 设计（ProjectNote / ProjectClause） |
 | 2026-05 | **角色机制反转：User.role → User.default_role；Project 新增 role（必填，LLM 视角依据）** |
+| 2026-09 | ProjectDocument 新增 `summary TEXT?` + `extracted_facts JSONB?` 字段（V2 预留，MVP 不写入）；理由：分层存储需求，详见 [`docs/product/upload-flow.md`](../product/upload-flow.md) §三 |
