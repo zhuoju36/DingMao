@@ -1,11 +1,32 @@
 """问诊相关 Pydantic schemas。"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.models.consultation import ConsultationScenario
+
+
+# ===== W3-W8 第 3 轮 EvidenceLinker 修复后（P2-2）：定义具体三源证据结构 =====
+
+class LawRef(BaseModel):
+    """法条引用（P0-2 修复：version 必填，对齐应用原则 3）。"""
+
+    code: str = Field(max_length=64)
+    article_no: str = Field(max_length=20)
+    version: str  # 必填：EvidenceLinker 缺失时 raise EvidenceValidationError
+    effective_date: str = Field(max_length=10)  # YYYY-MM-DD
+
+
+class StandardRef(BaseModel):
+    """强条引用。"""
+
+    code: str = Field(max_length=64)
+    clause_no: str = Field(max_length=20)
+    version: str
+    is_mandatory: bool
+    effective_date: str | None = Field(default=None, max_length=10)
 
 
 class ConsultationCreate(BaseModel):
@@ -23,13 +44,13 @@ class SubmitTextRequest(BaseModel):
 
 class ConclusionResponse(BaseModel):
     id: int
-    level: str  # red/yellow/green
+    level: Literal["red", "yellow", "green"]  # P2-1 修复：强类型保险
     title: str
     content: str
 
     fact_refs: list[int]
-    law_refs: list[dict[str, Any]]
-    standard_refs: list[dict[str, Any]]
+    law_refs: list[LawRef]               # P2-2 修复：替换 list[dict]
+    standard_refs: list[StandardRef]     # P2-2 修复：替换 list[dict]
 
     reasoning_chain: str | None
     counter_arguments: str | None

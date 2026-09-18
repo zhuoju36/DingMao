@@ -4,24 +4,8 @@ import { computed, onMounted, ref, watch } from "vue"
 import { useRouter } from "vue-router"
 import { ElMessage } from "element-plus"
 import apiClient from "@/api"
-import { useUserStore, type UserRole } from "@/stores/user"
-
-interface Project {
-  id: number
-  name: string
-  code: string | null
-  description: string | null
-  location: string | null
-  contract_amount: string | null
-  contract_start_date: string | null
-  contract_end_date: string | null
-  contract_text: string | null
-  owner_org: string | null
-  design_org: string | null
-  supervisor_org: string | null
-  contractor_org: string | null
-  role: UserRole
-}
+import { useUserStore } from "@/stores/user"
+import type { Project, UserRole } from "@/types/project"
 
 const router = useRouter()
 const userStore = useUserStore()

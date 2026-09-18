@@ -12,11 +12,7 @@ import {
   type ConsultationListItem,
 } from "@/api/consultation"
 import { SCENARIO_MAP } from "@/constants/scenarios"
-
-interface Project {
-  id: number
-  name: string
-}
+import type { Project } from "@/types/project"
 
 const route = useRoute()
 const router = useRouter()

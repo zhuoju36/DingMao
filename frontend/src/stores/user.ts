@@ -2,7 +2,10 @@
 import { defineStore } from "pinia"
 import { ref, computed } from "vue"
 
-export type UserRole = "owner" | "designer" | "supervisor" | "contractor" | "subcontractor"
+import type { UserRole } from "@/types/project"
+
+// Re-export UserRole（保持旧 import 路径兼容）
+export type { UserRole }
 
 export interface UserInfo {
   id: number

@@ -1,6 +1,6 @@
 """项目相关 Pydantic schemas。"""
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -61,6 +61,10 @@ class ProjectResponse(BaseModel):
     contract_text: str | None = None
 
     contract_clauses: dict[str, Any] | None = None
+
+    # P3-2 修复：Dashboard 排序需要此字段
+    created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 

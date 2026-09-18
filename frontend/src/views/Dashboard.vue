@@ -6,16 +6,7 @@ import { ElMessage } from "element-plus"
 import apiClient from "@/api"
 import { listMyConsultations, type ConsultationListItem } from "@/api/consultation"
 import { useUserStore } from "@/stores/user"
-
-interface Project {
-  id: number
-  name: string
-  code: string | null
-  location: string | null
-  contract_amount: string | null
-  contractor_org: string | null
-  updated_at?: string
-}
+import type { Project } from "@/types/project"
 
 const router = useRouter()
 const userStore = useUserStore()

@@ -10,24 +10,7 @@ import {
   type ConsultationListItem,
 } from "@/api/consultation"
 import { SCENARIOS } from "@/constants/scenarios"
-import type { UserRole } from "@/stores/user"
-
-interface Project {
-  id: number
-  name: string
-  code: string | null
-  description: string | null
-  location: string | null
-  contract_amount: string | null
-  contract_start_date: string | null
-  contract_end_date: string | null
-  contract_text: string | null
-  owner_org: string | null
-  design_org: string | null
-  supervisor_org: string | null
-  contractor_org: string | null
-  role: UserRole
-}
+import type { Project, UserRole } from "@/types/project"
 
 // 角色中文标签（与 Projects/AppLayout 同步）
 const roleLabels: Record<UserRole, string> = {
